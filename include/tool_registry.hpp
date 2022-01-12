@@ -13,6 +13,7 @@ public:
   virtual ~ToolInterface() {}
   virtual void addToolOptions(boost::program_options::options_description& desc) = 0;
   virtual void setRuntimeConfig(const ipu_utils::RuntimeConfig& cfg) = 0;
+  virtual void init(const boost::program_options::variables_map& allOptions) = 0;
 
   ipu_utils::BuilderInterface& getGraphBuilder() {
     auto builderPtr = dynamic_cast<ipu_utils::BuilderInterface*>(this);

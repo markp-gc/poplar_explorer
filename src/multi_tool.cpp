@@ -10,7 +10,7 @@
 #include "io_utils.hpp"
 #include "tool_registry.hpp"
 
-#include "../cmake_discovered_tools.hpp"
+#include "../include/cmake_discovered_tools.hpp"
 
 /// Parse the tool name and return the tool name and a
 /// factory function that will create the tool specified
@@ -146,6 +146,7 @@ int main(int argc, char** argv) {
   tool->addToolOptions(desc);
   auto allOpts = parseOptions(argc, argv, desc);
   tool->setRuntimeConfig(getRuntimeConfig(allOpts));
+  tool->init(allOpts);
 
   return ipu_utils::GraphManager().run(tool->getGraphBuilder());
 }

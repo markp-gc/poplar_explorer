@@ -1,8 +1,8 @@
 #pragma once
 
-#include "../ipu_utils.hpp"
-#include "../io_utils.hpp"
-#include "../tool_registry.hpp"
+#include "ipu_utils.hpp"
+#include "io_utils.hpp"
+#include "tool_registry.hpp"
 
 #include <boost/program_options.hpp>
 
@@ -21,6 +21,7 @@ struct MatmulBenchmark :
   // Tool interface:
   void setRuntimeConfig(const ipu_utils::RuntimeConfig& cfg) override;
   void addToolOptions(boost::program_options::options_description& desc) override;
+  void init(const boost::program_options::variables_map& args) override {}
 
 private:
   ipu_utils::RuntimeConfig runConfig;

@@ -251,10 +251,30 @@ public:
   }
 };
 
-/// Utility to connect a stream to a std::vector.
+/// Helper functions for device IO with std::vector and scalars.
 template <class T>
 void connectStream(poplar::Engine& e, const std::string& handle, std::vector<T>& v) {
   e.connectStream(handle, v.data(), v.data() + v.size());
+}
+
+template <class T>
+void writeTensor(poplar::Engine& e, const std::string& handle, std::vector<T>& v) {
+  e.writeTensor(handle, v.data(), v.data() + v.size());
+}
+
+template <class T>
+void readTensor(poplar::Engine& e, const std::string& handle, std::vector<T>& v) {
+  e.readTensor(handle, v.data(), v.data() + v.size());
+}
+
+template <class T>
+void writeScalar(poplar::Engine& e, const std::string& handle, const T& s) {
+  e.writeTensor(handle, &s, &s + 1);
+}
+
+template <class T>
+void readScalar(poplar::Engine& e, const std::string& handle, T& s) {
+  e.readTensor(handle, &s, &s + 1);
 }
 
 /// Utility for managing a tensor and its IO streams. We need to retain the handle

@@ -1,13 +1,15 @@
 #pragma once
 
-#include "../ipu_utils.hpp"
-#include "../io_utils.hpp"
-#include "../tool_registry.hpp"
+#include <ipu_utils.hpp>
+#include <io_utils.hpp>
+#include <tool_registry.hpp>
 
 /// This is just an empty skeleton. Can be used as starting point for new tools:
 struct EmptyTool :
   public ipu_utils::BuilderInterface, public ToolInterface
 {
+  /// Typically there is not much to do in the constructor because it is
+  /// called in a factory function before command-line options get parsed.
   EmptyTool() {}
   virtual ~EmptyTool() {}
 
@@ -42,6 +44,11 @@ struct EmptyTool :
   // Unless you want to ignore or overide the standard options you do not need to modify
   // this implementation.
   void setRuntimeConfig(const ipu_utils::RuntimeConfig& cfg) override { runConfig = cfg; };
+
+  // Because command line options can not be parsed before the class constructor is
+  // called this init callback is provided so that option dependent initialisation
+  // can take place. This is called after setRuntimeConfig() but before build/execute.
+  void init(const boost::program_options::variables_map& args) override {}
 
   ipu_utils::RuntimeConfig runConfig;
   ipu_utils::ProgramManager programs;
