@@ -8,7 +8,7 @@
 #include <popops/ElementWise.hpp>
 #include <popops/codelets.hpp>
 
-/// This is just an empty skeleton. Can be used as starting point for new tools:
+/// This simple example can be used as starting point for new tools:
 struct BasicTool :
   public ipu_utils::BuilderInterface, public ToolInterface
 {
@@ -28,9 +28,9 @@ struct BasicTool :
      "Dimension of vectors in computation.");
   }
 
-  // This is used by the launcher to set the runtime config (parsed from its own options).
-  // Unless you want to ignore or overide the standard options you do not need to modify
-  // this implementation.
+  // This is used by the tool launcher to set the runtime config (parsed from its own
+  // options). Unless you want to ignore or overide the standard options you do not
+  // need to modify this implementation.
   void setRuntimeConfig(const ipu_utils::RuntimeConfig& cfg) override {
     runConfig = cfg;
   }
@@ -51,12 +51,18 @@ struct BasicTool :
     return runConfig;
   }
 
+  // This is used by the runtime to allow consistent access to your programs
+  // by name and enables automatic save and restore of program names alongside
+  // an executable.
+  ipu_utils::ProgramManager& getPrograms() override {
+    return programs;
+  }
+
   // This is where you put your graph construction code. You have access to
   // the graph and target. You should also register programs here by populating
   // this object's `programs` member variable.
   // Note: If the runtime config specifies executable loading then this function
-  // will not be called by the runtime as the pre-constructed graph will come
-  // from the executable.
+  // will not be called because the pre-built graph will come from the executable.
   void build(poplar::Graph& graph, const poplar::Target& target) override {
     popops::addCodelets(graph);
 
@@ -71,16 +77,9 @@ struct BasicTool :
     popops::mulInPlace(graph, input, ten, prog, "mul_op");
     prog.add(input.buildRead(graph, false));
 
-    // Adding programs to the manager object allow us to call them by name
-    // (and also load and save the names with the graph executable):
+    // Adding programs to the manager object allows calling them by name
+    // (and also allows load and save of names with the graph executable):
     programs.add("multiply", prog);
-  }
-
-  // This is used by the runtime to allow consistent access to your programs
-  // by name and enables automatic save and restore of program names alongside
-  // an executable.
-  ipu_utils::ProgramManager& getPrograms() override {
-    return programs;
   }
 
   // This is where you define the execution of your graph program. You
