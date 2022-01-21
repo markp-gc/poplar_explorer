@@ -14,10 +14,6 @@ MatmulBenchmark::MatmulBenchmark()
 
 MatmulBenchmark::~MatmulBenchmark() {}
 
-ipu_utils::RuntimeConfig MatmulBenchmark::getRuntimeConfig() const {
-  return runConfig;
-}
-
 void MatmulBenchmark::build(poplar::Graph& g, const poplar::Target&) {
   using namespace poplar::program;
 
@@ -57,12 +53,10 @@ void MatmulBenchmark::build(poplar::Graph& g, const poplar::Target&) {
     lhsMatrices.shape(), rhsMatrices.shape(), results.shape());
   logTensorInfo(g, results);
 
-  programs.add("write_data", writeData);
-  programs.add("repeat_loop", repeat_loop);
-  programs.add("read_data", readData);
+  getPrograms().add("write_data", writeData);
+  getPrograms().add("repeat_loop", repeat_loop);
+  getPrograms().add("read_data", readData);
 }
-
-ipu_utils::ProgramManager& MatmulBenchmark::getPrograms() { return programs; }
 
 void MatmulBenchmark::execute(poplar::Engine& engine, const poplar::Device& device) {
   ipu_utils::logger()->info("Execution starts");
@@ -103,10 +97,6 @@ void MatmulBenchmark::execute(poplar::Engine& engine, const poplar::Device& devi
   double tflopsPerSecond = totalTflops / seconds;
   ipu_utils::logger()->info("TFLOPS/iteration: {}", tflopsPerIteration);
   ipu_utils::logger()->info("TFLOPS/sec: {}", tflopsPerSecond);
-}
-
-void MatmulBenchmark::setRuntimeConfig(const ipu_utils::RuntimeConfig& cfg) {
-  runConfig = cfg;
 }
 
 void MatmulBenchmark::addToolOptions(boost::program_options::options_description& desc) {

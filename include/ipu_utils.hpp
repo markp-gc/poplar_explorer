@@ -355,8 +355,22 @@ private:
 /// the interface methods at the correct time to build/compile/load/execute
 /// the graph.
 struct BuilderInterface {
-  virtual RuntimeConfig getRuntimeConfig() const = 0;
-  virtual ProgramManager& getPrograms() = 0;
+  // Returns device description to the runtime. For most applications you do not
+  // need to modify this implementation.
+  virtual void setRuntimeConfig(const ipu_utils::RuntimeConfig& cfg) {
+    runConfig = cfg;
+  }
+
+  virtual ipu_utils::RuntimeConfig getRuntimeConfig() const {
+    return runConfig;
+  }
+
+  // This is used by the runtime to allow consistent access to your programs
+  // by name and enables automatic save and restore of program names alongside
+  // an executable.
+  virtual ipu_utils::ProgramManager& getPrograms() {
+    return programs;
+  }
 
   /// Methods below are private as they should only be called by the GraphManager.
 private:
@@ -370,6 +384,10 @@ private:
   virtual std::unique_ptr<DeviceInterface> getDevice() {
     return getDeviceFromConfig(getRuntimeConfig());
   }
+
+private:
+  ipu_utils::RuntimeConfig runConfig;
+  ipu_utils::ProgramManager programs;
 };
 
 /// Utility class that can be used to wrap a poplar::Engine::ProgressFunc

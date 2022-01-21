@@ -12,7 +12,14 @@ public:
   ToolInterface() {}
   virtual ~ToolInterface() {}
   virtual void addToolOptions(boost::program_options::options_description& desc) = 0;
-  virtual void setRuntimeConfig(const ipu_utils::RuntimeConfig& cfg) = 0;
+
+  // This is used by the tool launcher to set the runtime config (parsed from its own
+  // options). Unless you want to ignore or overide the standard options you do not
+  // need to modify this implementation.
+  virtual void setRuntimeConfig(const ipu_utils::RuntimeConfig& cfg) {
+    getGraphBuilder().setRuntimeConfig(cfg);
+  }
+
   virtual void init(const boost::program_options::variables_map& allOptions) = 0;
 
   ipu_utils::BuilderInterface& getGraphBuilder() {

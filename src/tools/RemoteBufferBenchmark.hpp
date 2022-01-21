@@ -13,13 +13,10 @@ struct RemoteBufferBenchmark :
   virtual ~RemoteBufferBenchmark();
 
   // Builder interface:
-  ipu_utils::RuntimeConfig getRuntimeConfig() const override;
   void build(poplar::Graph& g, const poplar::Target&) override;
-  ipu_utils::ProgramManager& getPrograms() override;
   void execute(poplar::Engine& engine, const poplar::Device& device) override;
 
   // Tool interface:
-  void setRuntimeConfig(const ipu_utils::RuntimeConfig& cfg) override;
   void addToolOptions(boost::program_options::options_description& desc) override;
   void init(const boost::program_options::variables_map& args) override {}
 
@@ -36,9 +33,6 @@ private:
     return convert.at(bufferType);
   }
 
-  ipu_utils::RuntimeConfig runConfig;
-  boost::program_options::variables_map args;
-  ipu_utils::ProgramManager programs;
   poplar::RemoteBuffer buffer;
   std::string bufferType;
   std::size_t bufferRepeats;

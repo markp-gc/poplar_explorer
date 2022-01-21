@@ -11,19 +11,20 @@
 
 #include <boost/program_options.hpp>
 
-/// A cache provides a local table of features that can be filled
-/// from a larger table of features stored in a remote buffer.
-struct FeatureCache {
-  FeatureCache(std::string cacheName, poplar::Type type,
-               std::size_t featureCount,      // Total number of features in remote buffer.
-               std::size_t featureSize,       // Length of each feature vector.
-               std::size_t remoteFetchCount,  // Number of features fetched in each cache update.
-               bool useSlicePlanner)          // Whether the scatter should be planned.
+/// A cache provides a local table of variables that can be filled
+/// from a larger table of variables stored in a remote buffer.
+struct SoftwareCache {
+  SoftwareCache(std::string cacheName,
+                poplar::Type type,               // Element type of cache lines.
+                std::size_t totalCacheableLines, // Total number of lines in remote buffer.
+                std::size_t lineSize,            // Number of elements in each cache line.
+                std::size_t remoteFetchCount,    // Number of lines fetched in each cache update.
+                bool useSlicePlanner)            // Whether the on chip scatter should be planned.
   :
     name(cacheName),
     dataType(type),
-    totalFeatureCount(featureCount),
-    featureDimension(featureSize),
+    totalFeatureCount(totalCacheableLines),
+    featureDimension(lineSize),
     fetchCount(remoteFetchCount),
     useSlicePlan(useSlicePlanner),
     remoteFetchOffsets(cacheName + "/fetch_offsets"),
@@ -100,7 +101,7 @@ struct SoftwareCacheBenchmark :
 
 private:
   std::unique_ptr<gather::MultiSlice> slicer;
-  std::unique_ptr<FeatureCache> cache;
+  std::unique_ptr<SoftwareCache> cache;
   ipu_utils::RuntimeConfig runConfig;
   ipu_utils::ProgramManager programs;
   std::size_t deviceFeatureCount;

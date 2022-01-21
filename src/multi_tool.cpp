@@ -5,6 +5,7 @@
 #include <limits>
 #include <chrono>
 #include <memory>
+#include <sstream>
 
 #include <boost/program_options.hpp>
 #include "io_utils.hpp"
@@ -58,7 +59,6 @@ std::pair<std::string, ToolFactoryFunction> parseToolName(int argc, char** argv)
     throw std::runtime_error("Unrecognised tool name.");
   }
 
-  ipu_utils::logger()->info("Selected tool {}", toolName);
   return std::make_pair(toolName, globalTools.at(toolName));
 }
 
@@ -94,6 +94,8 @@ parseOptions(int argc, char** argv,
   ("defer-attach", po::bool_switch()->default_value(false),
   "If false (default) then a device is reserved before compilation, otherwise the device is not acquired until the program is ready to run."
   )
+  ("log-level", po::value<std::string>()->default_value("debug"),
+  "Set the log level to one of the following: 'trace', 'debug', 'info', 'warn', 'err', 'critical', 'off'.")
   ;
 
   po::options_description all("All Options");
@@ -118,7 +120,7 @@ parseOptions(int argc, char** argv,
   return args;
 }
 
-ipu_utils::RuntimeConfig getRuntimeConfig(const boost::program_options::variables_map& args) {
+ipu_utils::RuntimeConfig configFromOptions(const boost::program_options::variables_map& args) {
   auto exeName = args.at("save-exe").as<std::string>();
   if (exeName.empty()) { exeName = args.at("load-exe").as<std::string>(); }
 
@@ -133,10 +135,29 @@ ipu_utils::RuntimeConfig getRuntimeConfig(const boost::program_options::variable
   };
 }
 
-int main(int argc, char** argv) {
-  spdlog::set_level(spdlog::level::trace);
-  spdlog::set_pattern("[%H:%M:%S.%f] [%L] [%t] %v");
+void setupLogging(const boost::program_options::variables_map& args) {
+  std::map<std::string, spdlog::level::level_enum> levelFromStr = {
+    {"trace", spdlog::level::trace},
+    {"debug", spdlog::level::debug},
+    {"info", spdlog::level::info},
+    {"warn", spdlog::level::warn},
+    {"err", spdlog::level::err},
+    {"critical", spdlog::level::critical},
+    {"off", spdlog::level::off}
+  };
 
+  const auto levelStr = args["log-level"].as<std::string>();
+  try {
+    spdlog::set_level(levelFromStr.at(levelStr));
+  } catch (const std::exception& e) {
+    std::stringstream ss;
+    ss << "Invalid log-level: '" << levelStr << "'";
+    throw std::runtime_error(ss.str());
+  }
+  spdlog::set_pattern("[%H:%M:%S.%f] [%L] [%t] %v");
+}
+
+int main(int argc, char** argv) {
   std::string toolName;
   ToolFactoryFunction factoryFunc;
   std::tie(toolName, factoryFunc) = parseToolName(argc, argv);
@@ -145,7 +166,11 @@ int main(int argc, char** argv) {
   boost::program_options::options_description desc(toolName + " Options");
   tool->addToolOptions(desc);
   auto allOpts = parseOptions(argc, argv, desc);
-  tool->setRuntimeConfig(getRuntimeConfig(allOpts));
+
+  setupLogging(allOpts);
+  ipu_utils::logger()->info("Selected tool {}", toolName);
+
+  tool->setRuntimeConfig(configFromOptions(allOpts));
   tool->init(allOpts);
 
   return ipu_utils::GraphManager().run(tool->getGraphBuilder());

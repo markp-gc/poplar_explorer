@@ -28,35 +28,16 @@ struct BasicTool :
      "Dimension of vectors in computation.");
   }
 
-  // This is used by the tool launcher to set the runtime config (parsed from its own
-  // options). Unless you want to ignore or overide the standard options you do not
-  // need to modify this implementation.
-  void setRuntimeConfig(const ipu_utils::RuntimeConfig& cfg) override {
-    runConfig = cfg;
-  }
-
   // Because command line options can not be parsed before the class constructor is
   // called this init callback is provided so that option dependent initialisation
-  // can take place. This is called after setRuntimeConfig() but before build()/execute().
+  // can take place. This is called after ToolInterface::setRuntimeConfig() but before
+  // BuilderInterface::build()/execute().
   void init(const boost::program_options::variables_map& args) override {
     hostData.resize(args["size"].as<std::size_t>());
     std::iota(hostData.begin(), hostData.end(), 0.f);
   }
 
   /// Builder interface:
-
-  // Returns device description to the runtime. For most applications you do not
-  // need to modify this implementation.
-  ipu_utils::RuntimeConfig getRuntimeConfig() const override {
-    return runConfig;
-  }
-
-  // This is used by the runtime to allow consistent access to your programs
-  // by name and enables automatic save and restore of program names alongside
-  // an executable.
-  ipu_utils::ProgramManager& getPrograms() override {
-    return programs;
-  }
 
   // This is where you put your graph construction code. You have access to
   // the graph and target. You should also register programs here by populating
@@ -72,29 +53,35 @@ struct BasicTool :
     graph.setTileMapping(ten, 0u);
     poputil::mapTensorLinearly(graph, input);
 
-    poplar::program::Sequence prog;
-    prog.add(input.buildWrite(graph, false));
-    popops::mulInPlace(graph, input, ten, prog, "mul_op");
-    prog.add(input.buildRead(graph, false));
+    auto writeDataToIpu = input.buildWrite(graph, false);
+    auto readResultFromIpu = input.buildRead(graph, false);
 
-    // Adding programs to the manager object allows calling them by name
-    // (and also allows load and save of names with the graph executable):
-    programs.add("multiply", prog);
+    // Construct the program sequence:
+    poplar::program::Sequence prog;
+    prog.add(writeDataToIpu);
+    popops::mulInPlace(graph, input, ten, prog, "mul_op");
+    prog.add(readResultFromIpu);
+
+    // Adding all our programs to the manager object allows calling them
+    // by name but also allows load and save of names with the graph
+    // executable:
+    getPrograms().add("multiply", prog);
   }
 
   // This is where you define the execution of your graph program. You
   // have access to the engine and the device but not the graph.
   void execute(poplar::Engine& engine, const poplar::Device& device) override {
+    // input is a `StreamableTensor` and was named in the constructor hence internally
+    // it holds the correct identifiers to connect streams to the engine:
     input.connectReadStream(engine, hostData.data());
     input.connectWriteStream(engine, hostData.data());
 
+    // Use the program manager to run the program by name:
     ipu_utils::logger()->info("Input vector: {}", hostData);
-    programs.run(engine, "multiply");
+    getPrograms().run(engine, "multiply");
     ipu_utils::logger()->info("Result vector: {}", hostData);
   }
 
-  ipu_utils::RuntimeConfig runConfig;
-  ipu_utils::ProgramManager programs;
   ipu_utils::StreamableTensor input;
   std::vector<float> hostData;
 };

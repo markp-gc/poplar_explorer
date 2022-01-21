@@ -16,8 +16,8 @@ void SoftwareCacheBenchmark::init(const boost::program_options::variables_map& a
       true)
   );
   cache.reset(
-    new FeatureCache(
-      "feature_cache",
+    new SoftwareCache(
+      "on_chip_cache",
       poplar::FLOAT,
       totalFeatureCount,
       slicer->featureSize,
@@ -42,22 +42,22 @@ void SoftwareCacheBenchmark::build(poplar::Graph& graph, const poplar::Target&) 
   auto indices = slicer->createIndices(graph);
   auto gatherIndicesStream =
     graph.addHostToDeviceFIFO("write_indices", indices.elementType(), indices.numElements());
-  programs.add("write_gather_indices", Copy(gatherIndicesStream, indices, optimiseCopyMemoryUse, "write_gather_indices"));
+  getPrograms().add("write_gather_indices", Copy(gatherIndicesStream, indices, optimiseCopyMemoryUse, "write_gather_indices"));
 
   // Program to do the on IPU gather:
   Sequence gatherProg;
   auto result = slicer->createOutput(graph, features, indices, gatherProg);
-  programs.add("gather", gatherProg);
+  getPrograms().add("gather", gatherProg);
   auto resultStream =
     graph.addDeviceToHostFIFO("read_gather_result",
                               result.elementType(),
                               result.numElements());
-  programs.add("read_result", Copy(result, resultStream));
+  getPrograms().add("read_result", Copy(result, resultStream));
 
   // Build the cache:
   cache->build(graph, features, optimiseCopyMemoryUse);
-  programs.add("write_cache_indices", cache->offsetStreamSequence);
-  programs.add("fill_cache", cache->fillCache);
+  getPrograms().add("write_cache_indices", cache->offsetStreamSequence);
+  getPrograms().add("fill_cache", cache->fillCache);
 }
 
 ipu_utils::ProgramManager& SoftwareCacheBenchmark::getPrograms() { return programs; }

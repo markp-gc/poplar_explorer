@@ -9,10 +9,6 @@
 RemoteBufferBenchmark::RemoteBufferBenchmark() {}
 RemoteBufferBenchmark::~RemoteBufferBenchmark() {}
 
-ipu_utils::RuntimeConfig RemoteBufferBenchmark::getRuntimeConfig() const {
-  return runConfig;
-}
-
 void RemoteBufferBenchmark::build(poplar::Graph& g, const poplar::Target&) {
   using namespace poplar::program;
 
@@ -38,17 +34,13 @@ void RemoteBufferBenchmark::build(poplar::Graph& g, const poplar::Target&) {
   auto indices = g.addVariable(poplar::UNSIGNED_INT, {bufferRepeats},
                                poplar::VariableMappingMethod::LINEAR, "ipu_buffer");
   popops::iota(g, indices, 0u, setup, "create_buffer_indices");
-  programs.add("setup", setup);
+  getPrograms().add("setup", setup);
 
   Sequence ipuReadFromBuffer;
   ipuReadFromBuffer.add(Copy(buffer, tensor, indices));
 
   auto loop = poplar::program::Repeat(iterations, ipuReadFromBuffer);
-  programs.add("repeat_loop", loop);
-}
-
-ipu_utils::ProgramManager& RemoteBufferBenchmark::getPrograms() {
-  return programs;
+  getPrograms().add("repeat_loop", loop);
 }
 
 void RemoteBufferBenchmark::execute(poplar::Engine& engine, const poplar::Device& device) {
@@ -102,10 +94,6 @@ void RemoteBufferBenchmark::execute(poplar::Engine& engine, const poplar::Device
   hostGigaBytesPerSecond = gigaBytesTransferred / seconds;
   ipu_utils::logger()->info("Remote-buffer to host time: {}", seconds);
   ipu_utils::logger()->info("Remote-buffer to host bandwidth: {} GB/sec", hostGigaBytesPerSecond);
-}
-
-void RemoteBufferBenchmark::setRuntimeConfig(const ipu_utils::RuntimeConfig& cfg) {
-  runConfig = cfg;
 }
 
 std::size_t RemoteBufferBenchmark::totalBufferSize() const {

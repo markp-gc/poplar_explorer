@@ -30,8 +30,6 @@ struct FourierTransform :
   FourierTransform() {}
   virtual ~FourierTransform() {}
 
-  ipu_utils::RuntimeConfig getRuntimeConfig() const override { return runConfig; }
-
   void build(poplar::Graph& graph, const poplar::Target&) override {
     popops::addCodelets(graph);
     poplin::addCodelets(graph);
@@ -52,10 +50,8 @@ struct FourierTransform :
     graph.createHostRead("output_imag", output.imag);
     graph.createHostRead("cycle_count", cycleCount);
 
-    programs.add("fft", prog);
+    getPrograms().add("fft", prog);
   }
-
-  ipu_utils::ProgramManager& getPrograms() override { return programs; }
 
   void execute(poplar::Engine& engine, const poplar::Device& device) override {
     // Create input values and write to the device:
@@ -73,7 +69,7 @@ struct FourierTransform :
     }
 
     ipu_utils::logger()->info("Running program");
-    programs.run(engine, "fft");
+    getPrograms().run(engine, "fft");
 
     ipu_utils::readTensor(engine, "output_real", realData);
     ipu_utils::readTensor(engine, "output_imag", imagData);
@@ -94,8 +90,6 @@ struct FourierTransform :
      "Dimension of input vector to 1D FFT.");
   }
 
-  void setRuntimeConfig(const ipu_utils::RuntimeConfig& cfg) override { runConfig = cfg; };
-
   void init(const boost::program_options::variables_map& args) override {
     realData.resize(size);
     imagData.resize(size);
@@ -105,6 +99,4 @@ private:
   std::size_t size;
   std::vector<float> realData;
   std::vector<float> imagData;
-  ipu_utils::RuntimeConfig runConfig;
-  ipu_utils::ProgramManager programs;
 };
