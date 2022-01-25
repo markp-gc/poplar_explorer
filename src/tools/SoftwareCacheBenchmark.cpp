@@ -7,27 +7,11 @@
 #include "SoftwareCacheBenchmark.hpp"
 
 void SoftwareCacheBenchmark::init(const boost::program_options::variables_map& args) {
-  slicer.reset(
-    new gather::MultiSlice(
-      "embedding",
-      deviceFeatureCount,
-      featureDim,
-      gatherCount,
-      true)
-  );
   cache.reset(
     new SoftwareCache(
-      "on_chip_cache",
-      poplar::FLOAT,
-      totalFeatureCount,
-      slicer->featureSize,
-      fetchCount,
-      true)
+      "on_chip_cache", poplar::INT,
+      cacheableSetSize, residentSetSize, lineSize, fetchCount)
   );
-}
-
-ipu_utils::RuntimeConfig SoftwareCacheBenchmark::getRuntimeConfig() const {
-  return runConfig;
 }
 
 void SoftwareCacheBenchmark::build(poplar::Graph& graph, const poplar::Target&) {
@@ -35,32 +19,14 @@ void SoftwareCacheBenchmark::build(poplar::Graph& graph, const poplar::Target&) 
 
   popops::addCodelets(graph);
 
-  // Create gather inputs:
-  bool optimiseCopyMemoryUse = false;
-  slicer->plan(graph);
-  auto features = slicer->createValues(graph);
-  auto indices = slicer->createIndices(graph);
-  auto gatherIndicesStream =
-    graph.addHostToDeviceFIFO("write_indices", indices.elementType(), indices.numElements());
-  getPrograms().add("write_gather_indices", Copy(gatherIndicesStream, indices, optimiseCopyMemoryUse, "write_gather_indices"));
+  // Build the graph for the cache:
+  cache->build(graph);
 
-  // Program to do the on IPU gather:
-  Sequence gatherProg;
-  auto result = slicer->createOutput(graph, features, indices, gatherProg);
-  getPrograms().add("gather", gatherProg);
-  auto resultStream =
-    graph.addDeviceToHostFIFO("read_gather_result",
-                              result.elementType(),
-                              result.numElements());
-  getPrograms().add("read_result", Copy(result, resultStream));
-
-  // Build the cache:
-  cache->build(graph, features, optimiseCopyMemoryUse);
-  getPrograms().add("write_cache_indices", cache->offsetStreamSequence);
-  getPrograms().add("fill_cache", cache->fillCache);
+  // Register programs:
+  getPrograms().add("write_indices", cache->offsetStreamSequence);
+  getPrograms().add("cache_fetch", cache->cacheFetchProg);
+  getPrograms().add("copy_cache_to_host", cache->cacheReadProg);
 }
-
-ipu_utils::ProgramManager& SoftwareCacheBenchmark::getPrograms() { return programs; }
 
 void SoftwareCacheBenchmark::execute(poplar::Engine& engine, const poplar::Device& device) {
   if (!device.supportsRemoteBuffers()) {
@@ -69,97 +35,77 @@ void SoftwareCacheBenchmark::execute(poplar::Engine& engine, const poplar::Devic
 
   ipu_utils::logger()->info("Execution starts");
 
-  const auto& progs = getPrograms();
-
-  // Fill the remote buffer with the entire feature table:
+  // Fill the entire remote buffer with data:
   auto fillStartTime = std::chrono::steady_clock::now();
-  std::vector<float> featureVector(slicer->featureSize, 0);
-  for (std::size_t i = 0; i < cache->totalFeatureCount; ++i) {
-    std::fill(featureVector.begin(),featureVector.end(), i);
+  std::vector<std::int32_t> featureVector(lineSize, 0);
+  for (std::size_t i = 0; i < cache->cacheableSetSize; ++i) {
+    std::fill(featureVector.begin(), featureVector.end(), i);
     engine.copyToRemoteBuffer(featureVector.data(), cache->getRemoteBufferName(), i);
   }
-  auto hostCachePushEndTime = std::chrono::steady_clock::now();
-  auto seconds = std::chrono::duration<double>(hostCachePushEndTime - fillStartTime).count();
-  auto gigaBytesPerSec = (1e-9 / seconds) * slicer->featureSize * cache->totalFeatureCount * sizeof(float);
+  auto fillEndTime = std::chrono::steady_clock::now();
+  auto seconds = std::chrono::duration<double>(fillEndTime - fillStartTime).count();
+  auto gigaBytesPerSec = (1e-9 / seconds) * lineSize * cache->cacheableSetSize * sizeof(float);
   ipu_utils::logger()->info("Remote-buffer fill time (host to remote-buffer): {} secs rate: {} GB/sec", seconds, gigaBytesPerSec);
 
-  // List of feature indices to cache on the IPU and list of where to cache them:
-  std::vector<std::uint32_t> remoteFeatureIndices(cache->fetchCount);
+  // Make a list of indices of the remote buffer to fetch:
+  std::vector<std::uint32_t> remoteBufferIndices(cache->fetchCount);
+  for (std::size_t i = 0; i < remoteBufferIndices.size(); ++i) {
+    remoteBufferIndices[i] = i; // TODO make this random?
+  }
+
+  // List of locations in the cache for the fetched lines:
   std::vector<std::uint32_t> cacheDestinationIndices(cache->fetchCount);
-  for (std::size_t i = 0; i < remoteFeatureIndices.size(); ++i) {
-    remoteFeatureIndices[i] = 10 + i;
-  }
   for (std::size_t i = 0; i < cacheDestinationIndices.size(); ++i) {
-    cacheDestinationIndices[i] = cacheDestinationIndices.size() - 1 - i;
-  }
-  ipu_utils::connectStream(engine, cache->remoteFetchOffsets.getWriteHandle(), remoteFeatureIndices);
-  ipu_utils::connectStream(engine, cache->cacheScatterOffsets.getWriteHandle(), cacheDestinationIndices);
-
-  // List of indices to gather from the cache on the IPU:
-  std::vector<std::uint32_t> gatherIndices(slicer->outputSize);
-  for (std::size_t i = 0; i < gatherIndices.size(); ++i) {
-    gatherIndices[i] = i;
+    cacheDestinationIndices[i] = cacheDestinationIndices.size() - 1 - i; // TODO make this random?
   }
 
-  ipu_utils::connectStream(engine, "write_indices", gatherIndices);
+  // Buffer to read back the cache at end:
+  std::vector<std::int32_t> cacheContents(residentSetSize * lineSize);
 
-  std::vector<float> result(slicer->outputSize * slicer->featureSize);
-  ipu_utils::connectStream(engine, "read_gather_result", result);
+  // ipu_utils::logger()->info("Buffer indices: {}", remoteBufferIndices);
+  // ipu_utils::logger()->info("Cache indices: {}", cacheDestinationIndices);
 
-  ipu_utils::logger()->info("Running {} iterations", iterations);
-  auto startTime = std::chrono::steady_clock::now();
+  // Connect the streams to the buffers we just created:
+  cache->connectStreams(engine, remoteBufferIndices, cacheDestinationIndices, cacheContents);
+
+  // Set cache indices form the host:
+  // TODO: generate random cache fetch indices on IPU.
+  const auto& progs = getPrograms();
+  progs.run(engine, "write_indices");
+
+  // Repeatedly fetch data into the cache:
+  ipu_utils::logger()->info("Running {} iterations of cache fetches", iterations);
+  auto cacheFetchStartTime = std::chrono::steady_clock::now();
   for (auto i = 0u; i < iterations; ++i) {
-    progs.run(engine, "write_cache_indices");
-    progs.run(engine, "fill_cache");
+    progs.run(engine, "cache_fetch");
   }
-  auto ipuCachePullEndTime = std::chrono::steady_clock::now();
-  seconds = std::chrono::duration<double>(ipuCachePullEndTime - startTime).count();
-  gigaBytesPerSec = (1e-9 / seconds) * slicer->featureSize * cache->fetchCount * iterations * sizeof(float);
-  ipu_utils::logger()->info("Remote-buffer pull time (remote-buffer to IPU): {} secs rate: {} GB/sec", seconds, gigaBytesPerSec);
+  auto cacheFetchEndTime = std::chrono::steady_clock::now();
+  seconds = std::chrono::duration<double>(cacheFetchEndTime - cacheFetchStartTime).count();
+  gigaBytesPerSec = (1e-9 / seconds) * lineSize * cache->fetchCount * iterations * sizeof(float);
+  ipu_utils::logger()->info("Cache fetch time (remote-buffer to IPU): {} secs rate: {} GB/sec", seconds, gigaBytesPerSec);
 
-  progs.run(engine, "write_gather_indices");
-  progs.run(engine, "gather");
-  progs.run(engine, "read_result");
-  auto endTime = std::chrono::steady_clock::now();
-  auto totalTime = std::chrono::duration<double>(endTime - startTime).count();
-  ipu_utils::logger()->info("Total execution time: {} secs.", totalTime);
-
-  std::cerr << "Result:\n";
-  if (slicer->featureSize < 16 && slicer->outputSize < 50) {
-    auto v = result.begin();
-    for (auto f = 0u; f < slicer->outputSize; ++f) {
-      for (auto i = 0u; i < slicer->featureSize; ++i) {
-        std::cerr << *v << " ";
-        v += 1;
-      }
-      std::cerr << "\n";
-    }
+  if (cacheContents.size() < 100) {
+    progs.run(engine, "copy_cache_to_host");
+    ipu_utils::logger()->info("Cache state:\n{}", cacheContents);
   } else {
-    std::cerr << "Output supressed (too large).\n";
+    ipu_utils::logger()->info("Supressed output: too large ({} elements).", cacheContents.size());
   }
-}
-
-void SoftwareCacheBenchmark::setRuntimeConfig(const ipu_utils::RuntimeConfig& cfg) {
-  runConfig = cfg;
 }
 
 void SoftwareCacheBenchmark::addToolOptions(boost::program_options::options_description& desc) {
   namespace po = boost::program_options;
   desc.add_options()
-  ("device-feature-count", po::value<std::size_t>(&deviceFeatureCount)->default_value(10000),
-   "Number of feature vectors in lookup on device."
+  ("resident-set-size", po::value<std::size_t>(&residentSetSize)->default_value(10000),
+   "Number of lines stored in on chip-memory."
   )
-  ("total-feature-count", po::value<std::size_t>(&totalFeatureCount)->default_value(100000),
-   "Number of feature vectors in total (in remote buffer)."
+  ("remote-buffer-lines", po::value<std::size_t>(&cacheableSetSize)->default_value(100000),
+   "Number of data vectors in total (in remote buffer)."
   )
-  ("feature-dim", po::value<std::size_t>(&featureDim)->default_value(1024),
-   "Dimension of feature vectors."
-  )
-  ("gather-count", po::value<std::size_t>(&gatherCount)->default_value(256),
-   "Number of feature vectors to gather in on device embedding lookup."
+  ("line-size", po::value<std::size_t>(&lineSize)->default_value(1024),
+   "Number of elements in a cache line."
   )
   ("fetch-count", po::value<std::size_t>(&fetchCount)->required(),
-   "Number of features to fetch onto to device in a single remote buffer read."
+   "Number of lines to fetch from remote buffer in a single cache update."
   )
   ("iterations", po::value<std::size_t>(&iterations)->default_value(1000),
    "Number of pull-to-cache iterations."

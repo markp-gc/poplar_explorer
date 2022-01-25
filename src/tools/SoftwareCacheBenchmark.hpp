@@ -11,75 +11,117 @@
 
 #include <boost/program_options.hpp>
 
-/// A cache provides a local table of variables that can be filled
-/// from a larger table of variables stored in a remote buffer.
+/// A cache provides a local table of variables that can be filled from
+/// a larger table of variables stored in a remote buffer (i.e. DRAM).
 struct SoftwareCache {
   SoftwareCache(std::string cacheName,
-                poplar::Type type,               // Element type of cache lines.
-                std::size_t totalCacheableLines, // Total number of lines in remote buffer.
-                std::size_t lineSize,            // Number of elements in each cache line.
-                std::size_t remoteFetchCount,    // Number of lines fetched in each cache update.
-                bool useSlicePlanner)            // Whether the on chip scatter should be planned.
+                poplar::Type type,            // Element type of cache lines.
+                std::size_t numLinesOffChip,  // Total number of cacheable lines in remote buffer.
+                std::size_t maxCached,        // Number of cache lines held on chip.
+                std::size_t lineSize,         // Number of elements in each cache line.
+                std::size_t remoteFetchCount) // Number of lines fetched in each cache update.
   :
     name(cacheName),
     dataType(type),
-    totalFeatureCount(totalCacheableLines),
-    featureDimension(lineSize),
+    cacheableSetSize(numLinesOffChip),
+    totalCacheLines(maxCached),
+    cacheLineSize(lineSize),
     fetchCount(remoteFetchCount),
-    useSlicePlan(useSlicePlanner),
+    residentSet(cacheName + "/resident_set"),
     remoteFetchOffsets(cacheName + "/fetch_offsets"),
     cacheScatterOffsets(cacheName + "/scatter_offsets")
   {}
 
   std::string getRemoteBufferName() const { return name + "/remote_feature_buffer"; }
 
-  void build(poplar::Graph& graph, poplar::Tensor& deviceFeatures, bool optimiseCopyMemoryUse) {
+  void build(poplar::Graph& graph, bool optimiseCopyMemoryUse = true) {
     using namespace poplar::program;
 
-    // Create remote buffer for the feature store:
-    ipu_utils::logger()->info("Building remote buffer with {} remote features", totalFeatureCount);
-    remoteFeatures = graph.addRemoteBuffer(getRemoteBufferName(), poplar::FLOAT, featureDimension, totalFeatureCount);
+    ipu_utils::logger()->info("Cache '{}': Building cache of {} lines of size {}.", name, totalCacheLines, cacheLineSize);
 
-    // Create the Tensor which indexes into the remote buffer and a stream so the host can update the indices:
-    remoteFetchOffsets.buildTensor(graph, poplar::UNSIGNED_INT, {fetchCount}, poplar::VariableMappingMethod::LINEAR);
+    // Create remote buffer for the feature store:
+    ipu_utils::logger()->info("Cache '{}': Building remote buffer with {} remote features", name, cacheableSetSize);
+    remoteFeatures = graph.addRemoteBuffer(getRemoteBufferName(), dataType, cacheLineSize, cacheableSetSize);
+
+    // Create variables needed for the cache:
+    residentSet = popops::createSliceableTensor(graph, dataType, {totalCacheLines, cacheLineSize}, {0}, {1}, {}, {}, name + "/resident_set");
+    cacheReadProg.add(residentSet.buildRead(graph, optimiseCopyMemoryUse));
+
+    remoteFetchOffsets = graph.addVariable(poplar::UNSIGNED_INT, {fetchCount}, poplar::VariableMappingMethod::LINEAR);
     offsetStreamSequence.add(remoteFetchOffsets.buildWrite(graph, optimiseCopyMemoryUse));
 
-    ipu_utils::logger()->info("Building cache of {} features ({} features fetched per cache update).", deviceFeatures.dim(0), fetchCount);
-    scatter::MultiUpdate cacheUpdate(name + "/scatter_to_cache", deviceFeatures, fetchCount, useSlicePlan);
-    cacheUpdate.plan(graph);
+    scatter::MultiUpdate scatterToCache(name + "/scatter_to_cache", residentSet, fetchCount, false);
+    scatterToCache.plan(graph);
 
     // Create a temporary tensor for holding the IPU side cache.
-    auto fetchBuffer = cacheUpdate.createSource(graph);
-    cacheScatterOffsets = cacheUpdate.createIndices(graph);
+    auto fetchBuffer = scatterToCache.createSource(graph);
+    cacheScatterOffsets = scatterToCache.createIndices(graph);
     offsetStreamSequence.add(cacheScatterOffsets.buildWrite(graph, optimiseCopyMemoryUse));
 
-    // Program to fill pull the features currently indexed in remoteFetchOffsets into the cache:
-    ipu_utils::logger()->info("Building cache fill program (fetches {} features)", fetchCount);
-    fillCache = Sequence();
-    fillCache.add(Copy(remoteFeatures, fetchBuffer.reshape({fetchCount, featureDimension}), remoteFetchOffsets, name + "/copy_host_features_to_cache"));
-    fillCache.add(WriteUndef(remoteFetchOffsets, name + "/unlive_feature_offsets"));
+    const std::vector<std::size_t> fetchShape = {fetchCount, cacheLineSize};
 
-    ipu_utils::logger()->info("Building cache update (scatter {} features from fetchbuffer into the on device cache).", fetchCount);
-    cacheUpdate.createProgram(graph, fetchBuffer, cacheScatterOffsets, fillCache);
+    // The fetch program will read fromt the remote buffer into the
+    // fetch buffer and then scatter from the fetch buffer into the cache:
+    ipu_utils::logger()->info("Cache '{}': Building cache fetch program (fetches {} features)", name, fetchCount);
+    cacheFetchProg = Sequence();
+    cacheFetchProg.add(Copy(remoteFeatures, fetchBuffer.reshape(fetchShape), remoteFetchOffsets, name + "/copy_host_features_to_cache"));
+    cacheFetchProg.add(WriteUndef(remoteFetchOffsets, name + "/unlive_feature_offsets"));
 
-    // TODO: need to loop over a set of fetch indices to do larger transfers with low memory overhead.
-    fillCache.add(WriteUndef(fetchBuffer, name + "/unlive_fetch_buffer"));
-    fillCache.add(WriteUndef(cacheScatterOffsets, name + "/unlive_fetch_buffer_indices"));
+    ipu_utils::logger()->info("Cache '{}': Building update (scatter {} features from fetchbuffer into residentSet).", name, fetchCount);
+    scatterToCache.createProgram(graph, fetchBuffer, cacheScatterOffsets, cacheFetchProg);
+    cacheFetchProg.add(WriteUndef(fetchBuffer, name + "/unlive_fetch_buffer"));
+    cacheFetchProg.add(WriteUndef(cacheScatterOffsets, name + "/unlive_fetch_buffer_indices"));
+
     ipu_utils::logger()->info("Done building cache");
+  }
+
+  void connectStreams(
+    poplar::Engine& e,
+    std::vector<std::uint32_t>& remoteIndices,
+    std::vector<std::uint32_t>& localIndices,
+    std::vector<std::int32_t>& cacheData
+  ) {
+    ipu_utils::connectStream(e, remoteFetchOffsets.getWriteHandle(), remoteIndices);
+    ipu_utils::connectStream(e, cacheScatterOffsets.getWriteHandle(), localIndices);
+    ipu_utils::connectStream(e, residentSet.getReadHandle(), cacheData);
   }
 
   const std::string name;
   poplar::Type dataType;
-  const std::size_t totalFeatureCount; // Total number stored in remote buffers.
-  const std::size_t featureDimension;  // Dimension of feature vector space
-  const std::size_t fetchCount;        // Number of features that can be fetched in one copy. (If this is too big it results in excessive internal exchange code).
-  const bool useSlicePlan;
-  poplar::RemoteBuffer remoteFeatures; // Remote buffer where all features are stored.
-  ipu_utils::StreamableTensor remoteFetchOffsets; // Tensor that describes which feature indices to fetch from the remote buffer into the on IPU cache.
-                                                  // Could be updated by host (push to cache) or IPU itself (pull to cache).
-  ipu_utils::StreamableTensor cacheScatterOffsets; // Tensor that describes where the features fetched from the remote-buffer should be scattered to in the on-device cache.
-  poplar::program::Sequence offsetStreamSequence; // A program to update the offsets before updating the cache: it streams from the host all the offsets that describe the cache update.
-  poplar::program::Sequence fillCache; // Program to update the cache by using the offset indices to read from the remote buffer then scatter to the cache. This program invalidates the indices.
+  const std::size_t cacheableSetSize; // Total number of lines stored in the remote buffer.
+                                      // Only a subset can be on chip at once.
+  const std::size_t totalCacheLines;  // Number of cache lines on chip.
+  const std::size_t cacheLineSize;    // Number of elements on each cache line.
+  const std::size_t fetchCount;       // Number of lines that can be fetched from the
+                                      // remote buffer in one copy. (If this is too big it results
+                                      // in excessive internal exchange code so large fetches should
+                                      // be broken down into a series of smaller fetches).
+
+  // Remote buffer where all the cacheable data is stored:
+  poplar::RemoteBuffer remoteFeatures;
+
+  // Tensor that holds the on chip cached data. (Actually a multi-set in
+  // general since nothing enforces it as a set).
+  ipu_utils::StreamableTensor residentSet;
+
+  // Tensor that describes which feature indices to fetch from the remote buffer into the on
+  // IPU cache. These could be updated by host or IPU itself (push or pull to cache).
+  ipu_utils::StreamableTensor remoteFetchOffsets;
+
+  // Tensor that describes where the features fetched from the remote-buffer
+  // should be scattered to in the on-device cache.
+  ipu_utils::StreamableTensor cacheScatterOffsets;
+
+  // A program to update the offsets before updating the cache: it streams from
+  // the host all the offsets that describe the cache update.
+  poplar::program::Sequence offsetStreamSequence;
+
+  // Program to update the cache by using the offset indices to read from the
+  // remote buffer then scatter to the cache. This program invalidates the indices.
+  poplar::program::Sequence cacheFetchProg;
+
+  // Program to read back the entire cache to the host (mainly intended for debugging):
+  poplar::program::Sequence cacheReadProg;
 };
 
 struct SoftwareCacheBenchmark :
@@ -89,25 +131,20 @@ struct SoftwareCacheBenchmark :
   virtual ~SoftwareCacheBenchmark() {}
 
   // Builder interface:
-  ipu_utils::RuntimeConfig getRuntimeConfig() const override;
   void build(poplar::Graph& g, const poplar::Target&) override;
-  ipu_utils::ProgramManager& getPrograms() override;
   void execute(poplar::Engine& engine, const poplar::Device& device) override;
 
   // Tool interface:
-  void setRuntimeConfig(const ipu_utils::RuntimeConfig& cfg) override;
   void addToolOptions(boost::program_options::options_description& desc) override;
   void init(const boost::program_options::variables_map& args) override;
 
 private:
-  std::unique_ptr<gather::MultiSlice> slicer;
   std::unique_ptr<SoftwareCache> cache;
   ipu_utils::RuntimeConfig runConfig;
   ipu_utils::ProgramManager programs;
-  std::size_t deviceFeatureCount;
-  std::size_t totalFeatureCount;
-  std::size_t featureDim;
-  std::size_t gatherCount;
+  std::size_t residentSetSize;
+  std::size_t cacheableSetSize;
+  std::size_t lineSize;
   std::size_t fetchCount;
   std::size_t iterations;
 };
