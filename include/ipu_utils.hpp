@@ -14,16 +14,30 @@
 
 #include <pvti/pvti.hpp>
 
+#define COMPAT_SPDLOG_VERSION (SPDLOG_VER_MAJOR * 10000 + SPDLOG_VER_MINOR * 100 + SPDLOG_VER_PATCH)
+
 #include <boost/property_tree/ptree.hpp>
 #include <boost/property_tree/json_parser.hpp>
 #include <spdlog/spdlog.h>
+#if COMPAT_SPDLOG_VERSION >= 10500
+#include <spdlog/sinks/stdout_sinks.h>
+#endif
 #include <spdlog/fmt/ostr.h>
 
 namespace ipu_utils {
 
 /// Return the application's shared logger object.
 inline std::shared_ptr<spdlog::logger> logger() {
-  static auto logger = spdlog::stdout_logger_mt("ipu_trace_logger");
+  #if COMPAT_SPDLOG_VERSION >= 10500
+    static auto logger = [](){
+      auto console_sink = std::make_shared<spdlog::sinks::stdout_sink_mt>();
+      auto logger = std::make_shared<spdlog::logger>("ipu_trace_logger", console_sink);
+      spdlog::initialize_logger(logger);
+      return logger;
+    }();
+  #else
+    static auto logger = spdlog::stdout_logger_mt("ipu_trace_logger");
+  #endif
   return spdlog::get("ipu_trace_logger");
 }
 
