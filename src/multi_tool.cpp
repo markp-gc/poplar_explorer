@@ -157,6 +157,41 @@ void setupLogging(const boost::program_options::variables_map& args) {
   spdlog::set_pattern("[%H:%M:%S.%f] [%L] [%t] %v");
 }
 
+inline std::string makeArgsFileName(const std::string& name) {
+    return name + ".poplar.cmd";
+}
+
+// Very simple serialisation of command line:
+void serialiseCommandLine(std::ostream& os, int argc, char** argv) {
+  for (auto i = 0u; i < argc; ++i) {
+    os << argv[i] << "\n";
+  }
+}
+
+// Note: there is no formatting check of the command args file.
+boost::program_options::variables_map
+deserialiseAndParseCommandLine(std::istream& is,
+                               boost::program_options::options_description& toolOptions) {
+  if (!is.good()) {
+    throw std::runtime_error("Bad input file stream");
+  }
+  std::stringstream ss;
+  ss << is.rdbuf();
+  auto args = ss.str();
+  auto argc = std::count(args.begin(), args.end(), '\n');
+  ipu_utils::logger()->trace("Loaded {} args:\n{}", argc, args);
+  std::replace(args.begin(), args.end(), '\n', '\0');
+  char* subStrPtrs[argc];
+  std::size_t p = 0u;
+  for (auto i = 0u; i < argc; ++i) {
+    subStrPtrs[i] = &args[p];
+    auto s = std::string(subStrPtrs[i]);
+    p += s.length() + 1;
+  }
+  auto opts = parseOptions(argc, &subStrPtrs[0], toolOptions);
+  return opts;
+}
+
 int main(int argc, char** argv) {
   std::string toolName;
   ToolFactoryFunction factoryFunc;
@@ -170,7 +205,27 @@ int main(int argc, char** argv) {
   setupLogging(allOpts);
   ipu_utils::logger()->info("Selected tool {}", toolName);
 
-  tool->setRuntimeConfig(configFromOptions(allOpts));
+  auto cfg = configFromOptions(allOpts);
+
+  // If executable saving is requested we need to save the command arguments also:
+  if (cfg.saveExe) {
+    auto fn = makeArgsFileName(cfg.exeName);
+    ipu_utils::logger()->info("Exe save requested: saving command args to '{}'", fn);
+    std::ofstream fs(fn);
+    serialiseCommandLine(fs, argc, argv);
+  } else if (cfg.loadExe) {
+    auto fn = makeArgsFileName(cfg.exeName);
+    ipu_utils::logger()->info("Exe load requested: re-parsing command args from '{}'", fn);
+    try {
+      std::ifstream fs(fn);
+      allOpts = deserialiseAndParseCommandLine(fs, desc);
+    } catch (const std::exception& e) {
+      ipu_utils::logger()->warn("Error loading command args: '{}'. Continuing but your "
+                                "program may give incorrect results or crash if the arguments affect execution.", e.what());
+    }
+  }
+
+  tool->setRuntimeConfig(cfg);
   tool->init(allOpts);
 
   return ipu_utils::GraphManager().run(tool->getGraphBuilder());
