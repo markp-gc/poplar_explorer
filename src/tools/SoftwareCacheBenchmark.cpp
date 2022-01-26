@@ -6,6 +6,9 @@
 
 #include "SoftwareCacheBenchmark.hpp"
 
+#include <poprand/codelets.hpp>
+#include <poprand/RandomGen.hpp>
+
 void SoftwareCacheBenchmark::init(const boost::program_options::variables_map& args) {
   cache.reset(
     new SoftwareCache(
@@ -44,26 +47,27 @@ void SoftwareCacheBenchmark::execute(poplar::Engine& engine, const poplar::Devic
   }
   auto fillEndTime = std::chrono::steady_clock::now();
   auto seconds = std::chrono::duration<double>(fillEndTime - fillStartTime).count();
-  auto gigaBytesPerSec = (1e-9 / seconds) * lineSize * cache->cacheableSetSize * sizeof(float);
+  auto gigaBytesPerSec = (1e-9 / seconds) * lineSize * cacheableSetSize * sizeof(float);
+  ipu_utils::logger()->info("Remote-buffer rows: {}", cacheableSetSize);
   ipu_utils::logger()->info("Remote-buffer fill time (host to remote-buffer): {} secs rate: {} GB/sec", seconds, gigaBytesPerSec);
 
-  // Make a list of indices of the remote buffer to fetch:
-  std::vector<std::uint32_t> remoteBufferIndices(cache->fetchCount);
-  for (std::size_t i = 0; i < remoteBufferIndices.size(); ++i) {
-    remoteBufferIndices[i] = i; // TODO make this random?
-  }
+  // Make a list of indices of the remote buffer to fetch. Gen unique
+  // random set of random indices to fetch:
+  std::vector<std::uint32_t> remoteBufferIndices(cacheableSetSize);
+  std::mt19937 g(seed);
+  std::iota(remoteBufferIndices.begin(), remoteBufferIndices.end(), 0);
+  std::shuffle(remoteBufferIndices.begin(), remoteBufferIndices.end(), g);
+  remoteBufferIndices.resize(fetchCount);
 
-  // List of locations in the cache for the fetched lines:
-  std::vector<std::uint32_t> cacheDestinationIndices(cache->fetchCount);
-  for (std::size_t i = 0; i < cacheDestinationIndices.size(); ++i) {
-    cacheDestinationIndices[i] = cacheDestinationIndices.size() - 1 - i; // TODO make this random?
-  }
+  // List of locations in the cache for the fetched lines. Again use a random
+  // permutation:
+  std::vector<std::uint32_t> cacheDestinationIndices(residentSetSize);
+  std::iota(cacheDestinationIndices.begin(), cacheDestinationIndices.end(), 0);
+  std::shuffle(cacheDestinationIndices.begin(), cacheDestinationIndices.end(), g);
+  cacheDestinationIndices.resize(fetchCount);
 
   // Buffer to read back the cache at end:
   std::vector<std::int32_t> cacheContents(residentSetSize * lineSize);
-
-  // ipu_utils::logger()->info("Buffer indices: {}", remoteBufferIndices);
-  // ipu_utils::logger()->info("Cache indices: {}", cacheDestinationIndices);
 
   // Connect the streams to the buffers we just created:
   cache->connectStreams(engine, remoteBufferIndices, cacheDestinationIndices, cacheContents);
@@ -81,7 +85,7 @@ void SoftwareCacheBenchmark::execute(poplar::Engine& engine, const poplar::Devic
   }
   auto cacheFetchEndTime = std::chrono::steady_clock::now();
   seconds = std::chrono::duration<double>(cacheFetchEndTime - cacheFetchStartTime).count();
-  gigaBytesPerSec = (1e-9 / seconds) * lineSize * cache->fetchCount * iterations * sizeof(float);
+  gigaBytesPerSec = (1e-9 / seconds) * lineSize * fetchCount * iterations * sizeof(float);
   ipu_utils::logger()->info("Cache fetch time (remote-buffer to IPU): {} secs rate: {} GB/sec", seconds, gigaBytesPerSec);
 
   if (cacheContents.size() < 100) {
@@ -96,10 +100,10 @@ void SoftwareCacheBenchmark::addToolOptions(boost::program_options::options_desc
   namespace po = boost::program_options;
   desc.add_options()
   ("resident-set-size", po::value<std::size_t>(&residentSetSize)->default_value(10000),
-   "Number of lines stored in on chip-memory."
+   "Number of cache lines stored in on chip-memory."
   )
-  ("remote-buffer-lines", po::value<std::size_t>(&cacheableSetSize)->default_value(100000),
-   "Number of data vectors in total (in remote buffer)."
+  ("remote-buffer-size", po::value<std::size_t>(&cacheableSetSize)->default_value(100000),
+   "Number of cacheable lines in total (in remote buffer)."
   )
   ("line-size", po::value<std::size_t>(&lineSize)->default_value(1024),
    "Number of elements in a cache line."
@@ -109,6 +113,9 @@ void SoftwareCacheBenchmark::addToolOptions(boost::program_options::options_desc
   )
   ("iterations", po::value<std::size_t>(&iterations)->default_value(1000),
    "Number of pull-to-cache iterations."
+  )
+  ("seed", po::value<std::size_t>(&seed)->default_value(10142),
+   "Seed used to generate random indices."
   )
   ;
 }

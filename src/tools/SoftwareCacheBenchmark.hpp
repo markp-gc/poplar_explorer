@@ -40,7 +40,7 @@ struct SoftwareCache {
     ipu_utils::logger()->info("Cache '{}': Building cache of {} lines of size {}.", name, totalCacheLines, cacheLineSize);
 
     // Create remote buffer for the feature store:
-    ipu_utils::logger()->info("Cache '{}': Building remote buffer with {} remote features", name, cacheableSetSize);
+    ipu_utils::logger()->info("Cache '{}': Building remote buffer with {} rows/lines", name, cacheableSetSize);
     remoteFeatures = graph.addRemoteBuffer(getRemoteBufferName(), dataType, cacheLineSize, cacheableSetSize);
 
     // Create variables needed for the cache:
@@ -62,12 +62,12 @@ struct SoftwareCache {
 
     // The fetch program will read fromt the remote buffer into the
     // fetch buffer and then scatter from the fetch buffer into the cache:
-    ipu_utils::logger()->info("Cache '{}': Building cache fetch program (fetches {} features)", name, fetchCount);
+    ipu_utils::logger()->info("Cache '{}': Building cache fetch program (fetches {} lines)", name, fetchCount);
     cacheFetchProg = Sequence();
     cacheFetchProg.add(Copy(remoteFeatures, fetchBuffer.reshape(fetchShape), remoteFetchOffsets, name + "/copy_host_features_to_cache"));
     cacheFetchProg.add(WriteUndef(remoteFetchOffsets, name + "/unlive_feature_offsets"));
 
-    ipu_utils::logger()->info("Cache '{}': Building update (scatter {} features from fetchbuffer into residentSet).", name, fetchCount);
+    ipu_utils::logger()->info("Cache '{}': Building update (scatter {} lines from fetchbuffer into residentSet).", name, fetchCount);
     scatterToCache.createProgram(graph, fetchBuffer, cacheScatterOffsets, cacheFetchProg);
     cacheFetchProg.add(WriteUndef(fetchBuffer, name + "/unlive_fetch_buffer"));
     cacheFetchProg.add(WriteUndef(cacheScatterOffsets, name + "/unlive_fetch_buffer_indices"));
@@ -147,4 +147,5 @@ private:
   std::size_t lineSize;
   std::size_t fetchCount;
   std::size_t iterations;
+  std::size_t seed;
 };
