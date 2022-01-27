@@ -46,3 +46,4 @@ set(PROG_SRC
 )
 add_executable(multi-tool ${PROG_SRC})
 target_link_libraries(multi-tool Boost::program_options fft tools -lpoplin -lpopops -lpoputil -lpthread -lpvti)
+set_target_properties(multi-tool PROPERTIES BUILD_RPATH_USE_ORIGIN TRUE)

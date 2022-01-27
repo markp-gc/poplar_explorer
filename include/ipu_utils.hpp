@@ -339,6 +339,16 @@ struct StreamableTensor {
     e.connectStream(getReadHandle(), data);
   }
 
+  template <class T>
+  void connectWriteStream(poplar::Engine& e, std::vector<T>& v) const {
+    connectStream(e, getWriteHandle(), v);
+  }
+
+  template <class T>
+  void connectReadStream(poplar::Engine& e, std::vector<T>& v) const {
+    connectStream(e, getReadHandle(), v);
+  }
+
   std::size_t numElements() const { return get().numElements(); }
   poplar::Type elementType() const { return get().elementType(); }
   std::vector<std::size_t> shape() const { return get().shape(); }

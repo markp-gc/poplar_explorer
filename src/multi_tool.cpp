@@ -63,9 +63,9 @@ std::pair<std::string, ToolFactoryFunction> parseToolName(int argc, char** argv)
 }
 
 /// Parse the general options and options for the selected tool in one go:
-boost::program_options::variables_map
-parseOptions(int argc, char** argv,
-             boost::program_options::options_description& toolOptions) {
+void parseOptions(int argc, char** argv,
+                  boost::program_options::options_description& toolOptionsDesc,
+                  boost::program_options::variables_map& args) {
   namespace po = boost::program_options;
   po::options_description desc("General Options");
 
@@ -99,17 +99,14 @@ parseOptions(int argc, char** argv,
   ;
 
   po::options_description all("All Options");
-  all.add(desc).add(toolOptions);
+  all.add(desc).add(toolOptionsDesc);
 
-  boost::program_options::variables_map args;
-  auto parsed = po::command_line_parser(argc, argv).options(all).run();
-  po::store(parsed, args);
+  auto parser = po::command_line_parser(argc, argv).options(all);
+  po::store(parser.run(), args);
   if (args.count("help")) {
     std::cout << all << "\n";
     std::exit(0);
   }
-
-  po::notify(args);
 
   auto saveExe = !args.at("save-exe").as<std::string>().empty();
   auto loadExe = !args.at("load-exe").as<std::string>().empty();
@@ -117,7 +114,6 @@ parseOptions(int argc, char** argv,
     throw std::logic_error("You can not set both save-exe and load-exe.");
   }
 
-  return args;
 }
 
 ipu_utils::RuntimeConfig configFromOptions(const boost::program_options::variables_map& args) {
@@ -169,9 +165,9 @@ void serialiseCommandLine(std::ostream& os, int argc, char** argv) {
 }
 
 // Note: there is no formatting check of the command args file.
-boost::program_options::variables_map
-deserialiseAndParseCommandLine(std::istream& is,
-                               boost::program_options::options_description& toolOptions) {
+void deserialiseAndParseCommandLine(std::istream& is,
+                                    boost::program_options::options_description& desc,
+                                    boost::program_options::variables_map& result) {
   if (!is.good()) {
     throw std::runtime_error("Bad input file stream");
   }
@@ -188,8 +184,7 @@ deserialiseAndParseCommandLine(std::istream& is,
     auto s = std::string(subStrPtrs[i]);
     p += s.length() + 1;
   }
-  auto opts = parseOptions(argc, &subStrPtrs[0], toolOptions);
-  return opts;
+  parseOptions(argc, &subStrPtrs[0], desc, result);
 }
 
 int main(int argc, char** argv) {
@@ -200,7 +195,9 @@ int main(int argc, char** argv) {
 
   boost::program_options::options_description desc(toolName + " Options");
   tool->addToolOptions(desc);
-  auto allOpts = parseOptions(argc, argv, desc);
+
+  boost::program_options::variables_map allOpts;
+  parseOptions(argc, argv, desc, allOpts);
 
   setupLogging(allOpts);
   ipu_utils::logger()->info("Selected tool {}", toolName);
@@ -218,12 +215,14 @@ int main(int argc, char** argv) {
     ipu_utils::logger()->info("Exe load requested: re-parsing command args from '{}'", fn);
     try {
       std::ifstream fs(fn);
-      allOpts = deserialiseAndParseCommandLine(fs, desc);
+      deserialiseAndParseCommandLine(fs, desc, allOpts);
     } catch (const std::exception& e) {
       ipu_utils::logger()->warn("Error loading command args: '{}'. Continuing but your "
                                 "program may give incorrect results or crash if the arguments affect execution.", e.what());
     }
   }
+
+  boost::program_options::notify(allOpts);
 
   tool->setRuntimeConfig(cfg);
   tool->init(allOpts);

@@ -37,6 +37,24 @@ by `--help`. E.g.:
 ./multi-tool MatmulBenchmark --help
 ```
 
+## Executable Save and Load
+
+One of the nice features is that every tool automatically inherits save and load functionality.
+E.g. Try the following:
+```bash
+./multi-tool BasicTool --size 10 --save-exe basic --compile-only
+./multi-tool BasicTool --load-exe basic --iterations 10
+```
+When we load the exe graph construction and compilation are both skipped which potentially
+saves significant time for large graph programs. NOTE: when we run the saved executable
+we do not have to specify `size` because the command line is saved with the executable and
+gets re-parsed on load. However, we can still modify `iterations` when loading the executable:
+options specified on the command line override those saved with the exe. However, this means
+that we could also change size by mistake which is a value that gets compiled into the graph
+(specifically it determines the amount of data streamed to and from the host) so if we change
+`size` on the loaded executable the program could behave incorrectly or crash. **Currently this
+type of error is not detected automatically**.
+
 ## Adding a new tool
 
 A new tool is created by defining a C++ class that inherits from the abstract base

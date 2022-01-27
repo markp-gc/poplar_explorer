@@ -24,8 +24,13 @@ struct BasicTool :
   void addToolOptions(boost::program_options::options_description& desc) override {
     namespace po = boost::program_options;
     desc.add_options()
+    // Value of 'size' will be stored in the variables map and used later in init():
     ("size", po::value<std::size_t>()->default_value(4),
-     "Dimension of vectors in computation.");
+     "Dimension of vectors in computation.")
+    // Value of 'iterations' is stored directly to the 'iterations' member variable:
+    ("iterations", po::value<std::size_t>(&iterations)->default_value(1),
+     "Number of times to repeat computation.")
+    ;
   }
 
   // Because command line options can not be parsed before the class constructor is
@@ -73,15 +78,18 @@ struct BasicTool :
   void execute(poplar::Engine& engine, const poplar::Device& device) override {
     // input is a `StreamableTensor` and was named in the constructor hence internally
     // it holds the correct identifiers to connect streams to the engine:
-    input.connectReadStream(engine, hostData.data());
-    input.connectWriteStream(engine, hostData.data());
+    input.connectReadStream(engine, hostData);
+    input.connectWriteStream(engine, hostData);
 
     // Use the program manager to run the program by name:
     ipu_utils::logger()->info("Input vector: {}", hostData);
-    getPrograms().run(engine, "multiply");
+    for (auto i = 0u; i < iterations; ++i) {
+      getPrograms().run(engine, "multiply");
+    }
     ipu_utils::logger()->info("Result vector: {}", hostData);
   }
 
   ipu_utils::StreamableTensor input;
   std::vector<float> hostData;
+  std::size_t iterations;
 };
