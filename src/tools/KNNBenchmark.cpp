@@ -7,6 +7,9 @@
 #include <poplin/MatMul.hpp>
 #include <poputil/TileMapping.hpp>
 #include <popops/TopK.hpp>
+#include <gcl/Collectives.hpp>
+#include <popops/DynamicSlice.hpp>
+#include <popops/ElementWise.hpp>
 
 KNNBenchmark::KNNBenchmark()
 :
@@ -47,7 +50,30 @@ void KNNBenchmark::build(poplar::Graph& g, const poplar::Target&) {
 
   auto distances = poplin::matMul(g, query, vecs, knn, "calcDistances");  // [batch, D] X [D, N] -> [batch, N]
   auto topKParams = popops::TopKParams(k, false, popops::SortOrder::ASCENDING);
-  results = popops::topK(g, knn, distances, topKParams); // [batch, N] -> [batch, k]
+  poplar::Tensor ipuIndices, ipuResults;
+  std::tie(ipuResults, ipuIndices) =
+    popops::topKWithPermutation(g, knn, distances, topKParams, "topK"); // [batch, N] -> ([batch, k], [batch, k])
+  auto numReplicas = g.getReplicationFactor();
+  if (numReplicas == 1) {
+    results = std::move(ipuIndices);
+  } else {
+    // Each replica has its Top K, to gather them requires the indices to
+    // be converted to the global array, gathered together and a second
+    // topK performed to get the top indices across the whole set of replicas
+    auto repIndex = g.addReplicationIndexConstant("repIndex");
+    g.setTileMapping(repIndex, 0);
+    auto expr = popops::expr::Add(popops::expr::_1,
+                  popops::expr::Mul(popops::expr::Const(numVecs), popops::expr::_2));
+    popops::mapInPlace(g, expr, {ipuIndices, repIndex}, knn, "addIndexOffsets");
+    auto gatheredResults = gcl::allGatherCrossReplica(g, ipuResults, knn, "allGather"); // [batch, k] -> [r, batch, k]
+    gatheredResults = gatheredResults.dimShuffle({1, 0, 2}).reshape({batchSize, numReplicas * k});
+    auto gatheredIndices= gcl::allGatherCrossReplica(g, ipuIndices, knn, "allGather"); // [batch, k] -> [r, batch, k]
+    gatheredIndices = gatheredIndices.dimShuffle({1, 0, 2}).reshape({batchSize, numReplicas * k});
+    poplar::Tensor keys, values;
+    std::tie(keys, values) =
+      popops::topKKeyValue(g, knn, gatheredResults, gatheredIndices, topKParams, "multiReplicaTopK"); // [batch, r * k] -> [batch, k]
+    results = std::move(values);
+  }
   auto resultRead = results.buildRead(g, true);
   if (includeResultTransfer) {
     knn = Sequence({resultRead, knn});
@@ -59,7 +85,7 @@ void KNNBenchmark::build(poplar::Graph& g, const poplar::Target&) {
   readData.add(resultRead);
 
   ipu_utils::logger()->info(
-    "Searching {} vectors of size {}", numVecs, D);
+    "Searching {} vectors of size {}", numVecs * numReplicas, D);
   ipu_utils::logger()->info(
     "{} lookups to find k={} nearest neighbours.", batchSize, k);
   logTensorInfo(g, results);
@@ -70,10 +96,10 @@ void KNNBenchmark::build(poplar::Graph& g, const poplar::Target&) {
 
 void KNNBenchmark::execute(poplar::Engine& engine, const poplar::Device& device) {
   ipu_utils::logger()->info("Execution starts");
-
-  std::vector<float> vecsInput(numVecs * D, .5f);
-  std::vector<float> queryInput(batchSize * D, .5f);
-  std::vector<float> hostResult(batchSize * k, .1f);
+  auto numReplicas = getGraphBuilder().getRuntimeConfig().numReplicas;
+  std::vector<float> vecsInput(numVecs * D * numReplicas, .5f);
+  std::vector<float> queryInput(batchSize * D * numReplicas, .5f);
+  std::vector<unsigned> hostResult(batchSize * k * numReplicas, 0);
   std::vector<std::uint16_t> vecsHalfInput(vecsInput.size(), 1u);
   std::vector<std::uint16_t> queryHalfInput(queryInput.size(), 1u);
 
@@ -100,6 +126,7 @@ void KNNBenchmark::execute(poplar::Engine& engine, const poplar::Device& device)
 
   auto seconds = std::chrono::duration<double>(endTime - startTime).count();
   ipu_utils::logger()->info("Execution time: {}", seconds);
+
 
   double lookupsPerIteration = batchSize;
   double totalLookups = iterations * lookupsPerIteration;

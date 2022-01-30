@@ -164,6 +164,7 @@ private:
 
 struct RuntimeConfig {
   std::size_t numIpus;
+  std::size_t numReplicas;
   std::string exeName;
   bool useIpuModel;
   bool saveExe;
@@ -465,7 +466,7 @@ public:
 
       auto config = builder.getRuntimeConfig();
       auto device = builder.getDevice();
-      poplar::Graph graph(device->getTarget());
+      poplar::Graph graph(device->getTarget(), poplar::replication_factor(config.numReplicas));
 
       if (config.loadExe) {
         // When loading, we simply load-construct the executable and run it:

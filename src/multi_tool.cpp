@@ -80,6 +80,10 @@ parseOptions(int argc, char** argv,
    po::value<std::size_t>()->default_value(1),
    "Number of IPUs to use."
   )
+  ("replicas",
+   po::value<std::size_t>()->default_value(1),
+   "Number of replicas."
+  )
   ("save-exe",
    po::value<std::string>()->default_value(""),
    "Save the Poplar graph executable after compilation using this name (prefix)."
@@ -126,6 +130,7 @@ ipu_utils::RuntimeConfig configFromOptions(const boost::program_options::variabl
 
   return ipu_utils::RuntimeConfig{
     args.at("ipus").as<std::size_t>(),
+    args.at("replicas").as<std::size_t>(),
     exeName,
     args.at("model").as<bool>(),
     !args.at("save-exe").as<std::string>().empty(),
