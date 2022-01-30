@@ -27,6 +27,7 @@ private:
   std::size_t D;
   std::size_t numVecs;
   std::size_t iterations;
+  bool includeQueryTransfer, includeResultTransfer, skipInitialization;
   ipu_utils::StreamableTensor query;
   ipu_utils::StreamableTensor vecs;
   ipu_utils::StreamableTensor results;
