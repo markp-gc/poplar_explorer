@@ -47,7 +47,7 @@ void KNNBenchmark::build(poplar::Graph& g, const poplar::Target&) {
 
   auto distances = poplin::matMul(g, query, vecs, knn, "calcDistances");  // [batch, D] X [D, N] -> [batch, N]
   auto topKParams = popops::TopKParams(k, false, popops::SortOrder::ASCENDING);
-  results = popops::topK(g, knn, distances, topKParams); // [batch, D] -> [batch, k]
+  results = popops::topK(g, knn, distances, topKParams); // [batch, N] -> [batch, k]
   auto resultRead = results.buildRead(g, true);
   if (includeResultTransfer) {
     knn = Sequence({resultRead, knn});
