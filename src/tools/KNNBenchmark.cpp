@@ -22,6 +22,7 @@ KNNBenchmark::~KNNBenchmark() {}
 
 void KNNBenchmark::build(poplar::Graph& g, const poplar::Target&) {
   using namespace poplar::program;
+  auto numReplicas = g.getReplicationFactor();
 
   popops::addCodelets(g);
   poplin::addCodelets(g);
@@ -32,9 +33,15 @@ void KNNBenchmark::build(poplar::Graph& g, const poplar::Target&) {
   const std::vector<std::size_t> lhsShape = {batchSize, D};
   const std::vector<std::size_t> rhsShape = {D, numVecs};
 
-  query = poplin::createMatMulInputLHS(g, dtype, dtype, lhsShape, rhsShape, "query", {}, &cache);
+  auto queryM = poplin::createMatMulInputLHS(g, dtype, dtype, lhsShape, rhsShape, "query", {}, &cache);
   vecs = poplin::createMatMulInputRHS(g, dtype, dtype, lhsShape, rhsShape, "vecs", {}, &cache);
-
+  if (numReplicas == 1) {
+    query = queryM.flatten();
+  } else {
+    assert((batchSize * D) % numReplicas == 0);
+    query = g.addVariable(dtype, {(batchSize * D)/numReplicas}, "queryIn");
+    poputil::mapTensorLinearly(g, query);
+  }
   auto queryWrite = query.buildWrite(g, true);
 
   Sequence writeData;
@@ -47,13 +54,17 @@ void KNNBenchmark::build(poplar::Graph& g, const poplar::Target&) {
   if (includeQueryTransfer) {
     knn.add(queryWrite);
   }
+  if (numReplicas > 1) {
+    auto gatheredQuery = gcl::allGatherCrossReplica(g, query, knn, "queryToReplicas");
+    knn.add(Copy(gatheredQuery.flatten(), queryM.flatten()));
+  }
 
-  auto distances = poplin::matMul(g, query, vecs, knn, "calcDistances");  // [batch, D] X [D, N] -> [batch, N]
+  auto distances = poplin::matMul(g, queryM, vecs, knn, "calcDistances");  // [batch, D] X [D, N] -> [batch, N]
   auto topKParams = popops::TopKParams(k, false, popops::SortOrder::ASCENDING);
   poplar::Tensor ipuIndices, ipuResults;
   std::tie(ipuResults, ipuIndices) =
     popops::topKWithPermutation(g, knn, distances, topKParams, "topK"); // [batch, N] -> ([batch, k], [batch, k])
-  auto numReplicas = g.getReplicationFactor();
+
   if (numReplicas == 1) {
     results = std::move(ipuIndices);
   } else {
