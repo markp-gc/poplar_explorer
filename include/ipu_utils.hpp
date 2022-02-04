@@ -475,6 +475,7 @@ public:
     try {
       pvti::TraceChannel traceChannel = {"ipu_utils::GraphManager"};
 
+      logger()->info("Poplar version: {}", poplar::versionString());
       auto config = builder.getRuntimeConfig();
       auto device = builder.getDevice();
       poplar::Graph graph(device->getTarget());
