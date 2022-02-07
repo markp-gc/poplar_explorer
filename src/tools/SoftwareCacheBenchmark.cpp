@@ -23,7 +23,9 @@ void SoftwareCacheBenchmark::build(poplar::Graph& graph, const poplar::Target&) 
   popops::addCodelets(graph);
 
   // Build the graph for the cache:
-  cache->build(graph);
+  bool optimiseMemoryUse = !optimiseCycles;
+  ipu_utils::logger()->info("Optimise memory use: {}", optimiseMemoryUse);
+  cache->build(graph, optimiseMemoryUse);
 
   // Register programs:
   getPrograms().add("write_indices", cache->offsetStreamSequence);
@@ -117,5 +119,6 @@ void SoftwareCacheBenchmark::addToolOptions(boost::program_options::options_desc
   ("seed", po::value<std::size_t>(&seed)->default_value(10142),
    "Seed used to generate random indices."
   )
+  ("optimise-cycles", po::bool_switch(&optimiseCycles)->default_value(false))
   ;
 }
