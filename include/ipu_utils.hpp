@@ -299,6 +299,7 @@ void readScalar(poplar::Engine& e, const std::string& handle, T& s) {
 struct StreamableTensor {
   StreamableTensor(const std::string& s) : name(s) {}
 
+  std::string getName() const { return name; }
   std::string getWriteHandle() const { return name + "/write_stream"; }
   std::string getReadHandle() const { return name + "/read_stream"; }
 
@@ -479,6 +480,7 @@ public:
       logger()->info("Poplar version: {}", poplar::versionString());
       auto config = builder.getRuntimeConfig();
       auto device = builder.getDevice();
+      logger()->info("Creating graph with {} replicas", config.numReplicas);
       poplar::Graph graph(device->getTarget(), poplar::replication_factor(config.numReplicas));
 
       if (config.loadExe) {
