@@ -35,6 +35,17 @@ endforeach()
 file(APPEND ${GENERATED_TOOLS_FILE} "};\n\n")
 message(STATUS "Discovered the following tools: ${TOOL_NAMES}")
 
+# Generate a bash completion script: if you source this script
+# bash will auto complete names of discovered tools:
+set(COMPLETION_FILE ${CMAKE_SOURCE_DIR}/completion.sh)
+file(WRITE ${COMPLETION_FILE} "\#/usr/bin/env bash\n\# This file is auto generated during CMake configuration.\n")
+file(APPEND ${COMPLETION_FILE} "_poplar_multi_tool_completions()\n{\n  if \[ \"\${\#COMP_WORDS\[\@\]}\" != \"2\" \]; then\n    return\n  fi\n  TOOLS=\"")
+foreach(T ${TOOL_NAMES})
+    file(APPEND ${COMPLETION_FILE} "${T} ")
+endforeach()
+file(APPEND ${COMPLETION_FILE} "\"\n  COMPREPLY=($(compgen -W \"\$\{TOOLS\}\" \"\$\{COMP_WORDS\[1\]\}\"))\n}\n")
+file(APPEND ${COMPLETION_FILE} "\ncomplete -o default -F _poplar_multi_tool_completions multi-tool\n")
+
 # Manually add libraries with specific functionality (potentially
 # used across mutliple tools).
 file(GLOB FFT_HEADERS ${PROJECT_SOURCE_DIR}/src/fft/*.hpp)

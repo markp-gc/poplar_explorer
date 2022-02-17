@@ -1,2 +1,3 @@
 include/cmake_discovered_tools.hpp
 build
+completion.sh
