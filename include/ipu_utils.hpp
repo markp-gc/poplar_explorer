@@ -310,6 +310,11 @@ struct StreamableTensor {
     checkedAssign(graph.addVariable(type, shape, mapping, name + "/tensor"));
   }
 
+  const poplar::Tensor& operator = (poplar::Tensor& t) {
+    checkedAssign(t);
+    return tensor;
+  }
+
   const poplar::Tensor& operator = (poplar::Tensor&& t) {
     checkedAssign(t);
     return tensor;
@@ -365,7 +370,7 @@ struct StreamableTensor {
 private:
   void checkedAssign(poplar::Tensor t) {
     if (tensor.valid()) {
-      throw std::logic_error("StreamableTensor may only assigned once.");
+      throw std::logic_error("StreamableTensor may only be assigned once.");
     }
     tensor = t;
   }

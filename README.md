@@ -15,7 +15,7 @@ Install the Poplar SDK following the instructions in the Getting Started guide f
 2) Install apt dependencies, configure, and build.
 
 ```
-sudo apt install cmake ninja-build libspdlog-dev
+sudo apt install cmake ninja-build libspdlog-dev libhdf5-dev libopencv-dev libboost-all-dev
 mkdir build
 cd build
 cmake ../ -G Ninja
