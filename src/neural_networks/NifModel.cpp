@@ -54,12 +54,17 @@ NifModel::NifModel(const std::string& h5File, const std::string& metaFile, const
   setupModel(h5File);
 }
 
-NifModel::NifModel(const std::string& h5File, const std::string& metaFile, const std::string& modelName, bool deviceDecoder)
+NifModel::NifModel(const std::string& h5File, const std::string& metaFile, const std::string& modelName, bool deviceDecoder, std::size_t batchSizeOverride)
   : NifModel(h5File, metaFile, modelName)
 {
   decodeOnDevice = deviceDecoder;
-  batchSize = *std::max_element(metaData.imageShape.begin(), metaData.imageShape.end());
-  ipu_utils::logger()->debug("Auto selected batch-size: {}", batchSize);
+  if (batchSizeOverride == 0u) {
+    batchSize = *std::max_element(metaData.imageShape.begin(), metaData.imageShape.end());
+    ipu_utils::logger()->debug("Auto selected batch-size: {}", batchSize);
+  } else {
+    batchSize = batchSizeOverride;
+    ipu_utils::logger()->debug("Forced batch-size: {}", batchSize);
+  }
 
   setupIoBuffers();
 }
@@ -205,7 +210,8 @@ NifModel::buildInference(poplar::Graph& g,
   popops::addCodelets(g);
   poplin::addCodelets(g);
 
-  poplar::program::Sequence prog;
+  poplar::program::Sequence progWithIO;
+  poplar::program::Sequence execModel;
   const auto dtype = poplar::FLOAT;
 
   if (inputUV.valid()) {
@@ -221,8 +227,8 @@ NifModel::buildInference(poplar::Graph& g,
     constexpr auto linearMapping = poplar::VariableMappingMethod::LINEAR;
     inputU = g.addVariable(dtype, {batchSize}, linearMapping, name + "/inputU");
     inputV = g.addVariable(dtype, {batchSize}, linearMapping, name + "/inputV");
-    prog.add(inputU.buildWrite(g, optimiseStreamMemory));
-    prog.add(inputV.buildWrite(g, optimiseStreamMemory));
+    progWithIO.add(inputU.buildWrite(g, optimiseStreamMemory));
+    progWithIO.add(inputV.buildWrite(g, optimiseStreamMemory));
     inputUV = poplar::concat({inputU.get().expand({0}), inputV.get().expand({0})}, 0);
     streamedIO = true;
   }
@@ -235,8 +241,8 @@ NifModel::buildInference(poplar::Graph& g,
   input = poplin::createMatMulInputLHS(g, dtype, dtype,
     inputShape, kernelShape, "fourier_features", matmulOptions, &cache);
 
-  auto encoded = buildEncodeInput(g, inputUV, prog);
-  prog.add(poplar::program::Copy(encoded, input));
+  auto encoded = buildEncodeInput(g, inputUV, execModel);
+  execModel.add(poplar::program::Copy(encoded, input));
 
   // Build core MLP model from the layer descriptions:
 
@@ -256,37 +262,46 @@ NifModel::buildInference(poplar::Graph& g,
     // Build the rhs and matmul op for the layer:
     l.kernel.tensor = poplin::createMatMulInputRHS(g, dtype, dtype, x.shape(), kernelShape, l.kernel.tensor.getName(), matmulOptions, &cache);
     std::string opPrefix = name + "/layer_" + std::to_string(i) + "_";
-    x = poplin::matMul(g, x, l.kernel.tensor, prog, dtype, opPrefix + "matmul", matmulOptions, &cache);
+    x = poplin::matMul(g, x, l.kernel.tensor, execModel, dtype, opPrefix + "matmul", matmulOptions, &cache);
     // Bias if needed:
     if (l.hasBias()) {
       l.bias.tensor = g.addVariable(dtype, l.bias.shape);
       g.setTileMapping(l.bias.tensor, g.getTileMapping(x[0]));
-      popops::addInPlace(g, x, l.bias.tensor.get(), prog, opPrefix + "add_bias");
+      popops::addInPlace(g, x, l.bias.tensor.get(), execModel, opPrefix + "add_bias");
     }
 
     if (l.activationFunction == "relu") {
-      popnn::nonLinearityInPlace(g, popnn::NonLinearityType::RELU, x, prog, opPrefix + "relu");
+      popnn::nonLinearityInPlace(g, popnn::NonLinearityType::RELU, x, execModel, opPrefix + "relu");
     }
   }
 
   if (decodeOnDevice) {
-    output = buildDecodeOuput(g, x, prog);
+    output = buildDecodeOuput(g, x, execModel);
   } else {
     output = x;
   }
 
+  inferenceBuilt = true;
+
+  // Only build reads of output and cycle count if the
+  // model is not being used inline in a larger program:
   if (streamedIO) {
-    // Only build reads of output and cycle count if the model
-    // is not being used inline in a larger program:
-    prog.add(output.buildRead(g, optimiseStreamMemory));
+    // Add a cycle count around the model:
+    cycleCount = poplar::cycleCount(g, execModel, 0, poplar::SyncType::INTERNAL, name + "/cycle_count");
+
+    // Execute the neural network:
+    progWithIO.add(execModel);
+
+    // Stream back results:
+    progWithIO.add(output.buildRead(g, optimiseStreamMemory));
+    progWithIO.add(cycleCount.buildRead(g, optimiseStreamMemory));
     ipu_utils::logger()->debug("NifModel '{}': Output shape: {}", name, output.shape());
 
-    cycleCount = poplar::cycleCount(g, prog, 0, poplar::SyncType::INTERNAL, name + "/cycle_count");
-    prog.add(cycleCount.buildRead(g, optimiseStreamMemory));
+    return progWithIO;
   }
 
-  inferenceBuilt = true;
-  return prog;
+  // Only return program that executes neural network:
+  return execModel;
 }
 
 poplar::program::Sequence NifModel::buildInit(poplar::Graph& g, bool optimiseStreamMemory) {

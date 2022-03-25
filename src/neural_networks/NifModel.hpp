@@ -16,7 +16,7 @@ struct IoBuffer;
 
 struct NifModel {
   NifModel(const std::string& h5File, const std::string& metaFile, const std::string& modelName);
-  NifModel(const std::string& h5File, const std::string& metaFile, const std::string& modelName, bool deviceDecoder);
+  NifModel(const std::string& h5File, const std::string& metaFile, const std::string& modelName, bool deviceDecoder, std::size_t batchSize = 0u);
 
   virtual ~NifModel();
 

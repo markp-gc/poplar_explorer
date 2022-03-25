@@ -38,8 +38,10 @@ struct MlpInference :
     ("partials-type", po::value<std::string>(&partialsType)->default_value("float"),
      "Partials type for matrix multiplies.")
     ("available-memory-proportion", po::value<float>(&availableMemoryProportion)->default_value(0.6),
-     "Partials type for matrix multiplies.")
+     "Available memory for matrix-multiplies/convolutions.")
      ("device-decode", po::value<bool>()->default_value(true))
+    ("batch-size", po::value<std::size_t>()->default_value(0),
+     "Manually set the batch-size: by default batch size is automatically set to the largest image dimension.")
     ;
   }
 
@@ -50,7 +52,8 @@ struct MlpInference :
     const auto h5File = args["h5-model"].as<std::string>();
 
     auto decodeOnDevice = args["device-decode"].as<bool>();
-    model = std::make_unique<NifModel>(h5File, metaFile, "nif", decodeOnDevice);
+    auto batchSize = args["batch-size"].as<std::size_t>();
+    model = std::make_unique<NifModel>(h5File, metaFile, "nif", decodeOnDevice, batchSize);
   }
 
   /// Build the model initialisation and inference graphs/programs:
