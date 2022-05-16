@@ -19,7 +19,7 @@
 
 #include <boost/program_options.hpp>
 
-/// Exampklel computes a 1D Fourier transform using the Cooley-Tukey algorithm for fast
+/// Example computes a 1D Fourier transform using the Cooley-Tukey algorithm for fast
 /// Fourier transforms (FFT). The the discrete Fourier transform (DFT) matrix is factorised
 /// into a base matrix multiply of some dimension (the radix size) followed by 'twiddles' or
 /// 'butterflies' that compute the second linear transformation in the factorisation (without
