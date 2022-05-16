@@ -20,15 +20,17 @@ struct NifModel {
 
   virtual ~NifModel();
 
+  void analyseModel(std::size_t sampleCount) const;
+
   std::uint64_t getCycleCount() const { return cycleCountResult; }
   std::size_t getBatchSize() const { return batchSize; }
 
   /// Build the input encoding program (generate Fourier features from UV coords):
-  poplar::Tensor buildEncodeInput(poplar::Graph& g, poplar::Tensor uvCoords, poplar::program::Sequence& prog);
+  poplar::Tensor buildEncodeInput(poplar::Graph& g, poplar::Type dtype, poplar::Tensor uvCoords, poplar::program::Sequence& prog);
 
   /// Build program to undo the mean shift and tone-mapping that was applied to training samples.
   /// Computed in-place if possible.
-  poplar::Tensor buildDecodeOuput(poplar::Graph& g, poplar::Tensor bgr, poplar::program::Sequence& prog);
+  poplar::Tensor buildDecodeOutput(poplar::Graph& g, poplar::Tensor bgr, poplar::program::Sequence& prog);
 
   /// Build the main model inference program:
   poplar::program::Sequence buildInference(
@@ -79,6 +81,7 @@ private:
   std::uint64_t cycleCountResult;
   bool inferenceBuilt;
   bool streamedIO;
+  bool hasYuv;
 
   ipu_utils::StreamableTensor inputU;
   ipu_utils::StreamableTensor inputV;

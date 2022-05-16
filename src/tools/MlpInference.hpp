@@ -29,13 +29,11 @@ struct MlpInference :
   void addToolOptions(boost::program_options::options_description& desc) override {
     namespace po = boost::program_options;
     desc.add_options()
-    ("keras-model", po::value<std::string>()->required(),
-     "Path to saved keras model.")
-    ("h5-model",  po::value<std::string>()->required(),
-     "Path to the keras model converted to h5 format.")
+    ("assets", po::value<std::string>()->required(),
+     "Path to the saved Keras model's '/assets.extra/' folder.")
     ("output", po::value<std::string>(&outfileName)->required(),
      "File name for saving the reconstructed image.")
-    ("partials-type", po::value<std::string>(&partialsType)->default_value("float"),
+    ("partials-type", po::value<std::string>(&partialsType)->default_value("half"),
      "Partials type for matrix multiplies.")
     ("available-memory-proportion", po::value<float>(&availableMemoryProportion)->default_value(0.6),
      "Available memory for matrix-multiplies/convolutions.")
@@ -48,8 +46,8 @@ struct MlpInference :
   /// Load the model description:
   void init(const boost::program_options::variables_map& args) override {
     // Read the metadata saved with the model:
-    const auto metaFile = args["keras-model"].as<std::string>() + "/assets.extra/nif_metadata.txt";
-    const auto h5File = args["h5-model"].as<std::string>();
+    const auto metaFile = args.at("assets").as<std::string>() + "/nif_metadata.txt";
+    const auto h5File = args.at("assets").as<std::string>() + "/converted.hdf5";
 
     auto decodeOnDevice = args["device-decode"].as<bool>();
     auto batchSize = args["batch-size"].as<std::size_t>();

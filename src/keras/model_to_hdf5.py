@@ -16,8 +16,8 @@ if __name__ == '__main__':
     args = parse_args()
 
     _, file_extension = os.path.splitext(args.output)
-    if not file_extension == ".h5":
-        raise RuntimeError("Output file name extension must be 'h5'")
+    if not (file_extension == ".h5" or file_extension == ".hdf5"):
+        raise RuntimeError("Output file name extension must be 'h5' or 'hdf5'")
 
     model = keras.models.load_model(args.model, compile=False)
     model.summary()

@@ -5,6 +5,7 @@ project(multi-tool)
 find_package(Boost REQUIRED COMPONENTS program_options)
 find_package(HDF5 REQUIRED COMPONENTS CXX)
 find_package(OpenCV REQUIRED)
+find_package(HDF5 REQUIRED COMPONENTS CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
@@ -58,10 +59,11 @@ file(APPEND ${COMPLETION_FILE} "\ncomplete -o default -F _poplar_multi_tool_comp
 # Manually add libraries with specific functionality (potentially used across mutliple tools):
 add_subdirectory(${PROJECT_SOURCE_DIR}/src/fft)
 add_subdirectory(${PROJECT_SOURCE_DIR}/src/neural_networks)
+add_subdirectory(${CMAKE_SOURCE_DIR}/src/keras)
 
 set(PROG_SRC
     ${CMAKE_SOURCE_DIR}/src/multi_tool.cpp
 )
 add_executable(multi-tool ${PROG_SRC})
-target_link_libraries(multi-tool Boost::program_options neural_networks fft tools -lpopnn -lpoplin -lpopops -lpoputil -lpthread -lpvti)
+target_link_libraries(multi-tool Boost::program_options neural_networks keras_utils ${HDF5_LIBRARIES} fft tools -lpopnn -lpoplin -lpopops -lpoputil -lpthread -lpvti)
 set_target_properties(multi-tool PROPERTIES BUILD_RPATH_USE_ORIGIN TRUE)

@@ -16,6 +16,8 @@
 
 #include <algorithm>
 
+namespace {
+
 std::size_t getFirstTile(poplar::Graph& g, poplar::Tensor t) {
   if (!t.valid()) {
     throw std::runtime_error("Un-initialised poplar::Tensor.");
@@ -31,18 +33,21 @@ std::size_t getFirstTile(poplar::Graph& g, poplar::Tensor t) {
   throw std::runtime_error("Tensor '" + t.getDebugStr() + "' has no tile mapping in this graph.");
 }
 
+} // end anonymous namespace
+
 NifModel::NifModel(const std::string& h5File, const std::string& metaFile, const std::string& modelName)
 : metaData(metaFile),
   name(modelName),
   batchSize(0u),
-  input("input"),
-  output("output"),
-  cycleCount("cycle_count"),
+  input(modelName + "/input"),
+  output(modelName + "/output"),
+  cycleCount(modelName + "/cycle_count"),
   cycleCountResult(std::numeric_limits<std::uint64_t>::max()),
   inferenceBuilt(false),
   streamedIO(false),
-  inputU("inputU"),
-  inputV("inputV"),
+  hasYuv(false),
+  inputU(modelName + "/inputU"),
+  inputV(modelName + "/inputV"),
   decodeOnDevice(true)
 {
   ipu_utils::logger()->info("Loading model metadata from file: '{}'", metaFile);
@@ -71,54 +76,63 @@ NifModel::NifModel(const std::string& h5File, const std::string& metaFile, const
 
 void NifModel::setupModel(const std::string& h5File) {
 
-  const std::vector<std::string> names = {
-    "dense",
-    "dense_1",
-    "dense_2",
-    "dense_3",
-    "dense_4"
-  };
+  // TODO: model loader is hard coded for sequential dense only layers:
+  Hdf5Model h5model(h5File);
 
-  // The NIF Model is mostly hard coded for now.
-  // (TODO: implement proper H5 model reader):
-  std::vector<std::string> kernels;
-  for (const auto& n : names) {
-    kernels.push_back(n + "/" + n + "/kernel:0");
-  }
-
-  std::vector<std::string> biases = {
-    "dense_3/dense_3/bias:0",
-    "dense_4/dense_4/bias:0"
-  };
-
-  Hdf5Model h5Kernels(h5File, kernels);
-  Hdf5Model h5Biases(h5File, biases);
-
-  auto nameItr = names.begin();
-  for (auto& p : kernels) {
-    auto& weights = h5Kernels.at(p);
-    layers.emplace_back(weights.shape, "relu", name + "/" + *nameItr);
-    layers.back().kernel.data = weights.storage;
-    nameItr += 1;
-  }
-
-  // Last two layers have biases:
-  layers[3].bias.data = h5Biases.at("dense_3/dense_3/bias:0").storage;
-  layers[4].bias.data = h5Biases.at("dense_4/dense_4/bias:0").storage;
-
-  // Last layer has no activation function:
-  layers.back().activationFunction = "none";
-
-  for (auto i = 0u; i < layers.size(); ++i) {
-    auto& l = layers[i];
-    if (l.hasBias()) {
+  auto i = 0u;
+  for (auto& l : h5model.get()) {
+    auto dtype = l.dtype == "float16" ? poplar::HALF : poplar::FLOAT;
+    layers.emplace_back(l.kernelData.shape, dtype, l.activation, name + "/" + l.name);
+    auto& newLayer = layers.back();
+    newLayer.kernel.data = l.kernelData.storage;
+    ipu_utils::logger()->debug("Added dense kernel: {} size: {}", newLayer.kernel.tensor.getName(), newLayer.kernel.data.size());
+    if (l.useBias) {
+      newLayer.bias.data = l.biasData.storage;
+      ipu_utils::logger()->debug("Added bias: {} size: {}", newLayer.bias.tensor.getName(), newLayer.bias.data.size());
       ipu_utils::logger()->debug("Layer {}: weight tensors: {} ({}) {} ({})",
-        i, l.kernel.tensor.getName(), l.kernel.shape, l.bias.tensor.getName(), l.bias.shape);
+        i, newLayer.kernel.tensor.getName(), newLayer.kernel.shape, newLayer.bias.tensor.getName(), newLayer.bias.shape);
     } else {
       ipu_utils::logger()->debug("Layer {}: weight tensors: {} ({})",
-        i, l.kernel.tensor.getName(), l.kernel.shape);
+        i, newLayer.kernel.tensor.getName(), newLayer.kernel.shape);
     }
+
+    // Rename linear -> none
+    if (newLayer.activationFunction == "linear") {
+      newLayer.activationFunction = "none";
+    }
+
+    // Sanity check values look ok:
+    if (newLayer.kernel.type == poplar::FLOAT) {
+      ipu_utils::logger()->trace("Kernel first value: {}", ((float*)newLayer.kernel.data.data())[0]);
+    }
+
+    i += 1;
   }
+}
+
+/// Calculate and log useful information about the model:
+void NifModel::analyseModel(std::size_t sampleCount) const {
+  std::size_t flops = 0;
+  std::size_t parametersBytes = 0;
+
+  for (const auto &l : layers) {
+    parametersBytes += l.kernel.data.size() + l.bias.data.size();
+
+    auto layerFlops = 2 * l.kernel.shape[0] * l.kernel.shape[1];
+    if (l.hasBias()) {
+      layerFlops += l.bias.shape[0];
+    }
+    flops += layerFlops;
+  }
+
+  auto parametersKiB = parametersBytes / 1024.f;
+  flops *= sampleCount;
+
+  ipu_utils::logger()->info("NIF {} layers: {}", name, layers.size());
+  ipu_utils::logger()->info("NIF {} Hidden size: {}", name, layers.front().kernel.shape[1]);
+  ipu_utils::logger()->info("NIF {} batch size: {}", name, sampleCount);
+  ipu_utils::logger()->info("NIF {} model FLOPS: {}", name, flops);
+  ipu_utils::logger()->info("NIF {} parameter size: {} KiB", name, parametersKiB);
 }
 
 void NifModel::setupIoBuffers() {
@@ -135,7 +149,7 @@ void NifModel::setupIoBuffers() {
 NifModel::~NifModel() {}
 
 /// Build the input encoding program (generate Fourier features from UV coords):
-poplar::Tensor NifModel::buildEncodeInput(poplar::Graph& g, poplar::Tensor uvCoords, poplar::program::Sequence& prog) {
+poplar::Tensor NifModel::buildEncodeInput(poplar::Graph& g, poplar::Type dtype, poplar::Tensor uvCoords, poplar::program::Sequence& prog) {
   std::string opPrefix = name + "/input_encoding";
 
   // Compute powers on host and upload as constant. This avoids using powf on
@@ -164,17 +178,19 @@ poplar::Tensor NifModel::buildEncodeInput(poplar::Graph& g, poplar::Tensor uvCoo
   auto posuv_fp16 = popops::cast(g, posuv, poplar::HALF, prog, opPrefix + "/to_fp16");
   auto cosuv_fp16 = popops::cos(g, posuv_fp16, prog, opPrefix + "/cos_fp16");
   popops::sinInPlace(g, posuv_fp16, prog, opPrefix + "/sin_fp16");
-  posuv = popops::cast(g, posuv_fp16, poplar::FLOAT, prog, opPrefix + "/to_fp32");
-  auto cosuv = popops::cast(g, cosuv_fp16, poplar::FLOAT, prog, opPrefix + "/to_fp32");
+  posuv = popops::cast(g, posuv_fp16, dtype, prog, opPrefix + "/to_fp32");
+  auto cosuv = popops::cast(g, cosuv_fp16, dtype, prog, opPrefix + "/to_fp32");
   auto fourierFeatures = poplar::concat({posuv[0], posuv[1], cosuv[0], cosuv[1]}, 1);
   return fourierFeatures;
 }
 
 /// Build program to apply mean shift and tone-mapping. Applies in-place if possible.
-poplar::Tensor NifModel::buildDecodeOuput(poplar::Graph& g, poplar::Tensor bgr, poplar::program::Sequence& prog) {
+poplar::Tensor NifModel::buildDecodeOutput(poplar::Graph& g, poplar::Tensor bgr, poplar::program::Sequence& prog) {
   std::string opPrefix = name + "/output_decoding";
   auto firstInputTile = getFirstTile(g, bgr);
 
+  // Always do output decoding at fp32:
+  bgr = popops::cast(g, bgr, poplar::FLOAT, prog);
   auto max = g.addConstant(poplar::FLOAT, {}, metaData.max, opPrefix + "/max");
   g.setTileMapping(max, firstInputTile);
   popops::mulInPlace(g, bgr, max, prog, opPrefix + "/scale_max");
@@ -223,7 +239,7 @@ NifModel::buildInference(poplar::Graph& g,
     streamedIO = false;
   } else {
     // No input tensor passed so create one and set it up for streaming:
-    ipu_utils::logger()->debug("{}: No input tensor provided. Input will be allocated fo rstremaing.", name);
+    ipu_utils::logger()->debug("{}: No input tensor provided. Input will be allocated for stremaing.", name);
     constexpr auto linearMapping = poplar::VariableMappingMethod::LINEAR;
     inputU = g.addVariable(dtype, {batchSize}, linearMapping, name + "/inputU");
     inputV = g.addVariable(dtype, {batchSize}, linearMapping, name + "/inputV");
@@ -235,13 +251,17 @@ NifModel::buildInference(poplar::Graph& g,
 
   // Lay out input for first matmul:
   auto kernelShape = layers.front().kernel.shape;
+  auto firstKernelType = layers.front().kernel.type;
   const TensorShape inputShape = {batchSize, kernelShape.front()};
   ipu_utils::logger()->debug("NifModel '{}': Input shape: {}", name, inputShape);
 
-  input = poplin::createMatMulInputLHS(g, dtype, dtype,
+  input = poplin::createMatMulInputLHS(g, firstKernelType, dtype,
     inputShape, kernelShape, "fourier_features", matmulOptions, &cache);
 
-  auto encoded = buildEncodeInput(g, inputUV, execModel);
+  auto encoded = buildEncodeInput(g, dtype, inputUV, execModel);
+  if (input.elementType() != encoded.elementType()) {
+    encoded = popops::cast(g, encoded, input.elementType(), execModel, name + "/cast_encodings");
+  }
   execModel.add(poplar::program::Copy(encoded, input));
 
   // Build core MLP model from the layer descriptions:
@@ -260,12 +280,12 @@ NifModel::buildInference(poplar::Graph& g,
     }
 
     // Build the rhs and matmul op for the layer:
-    l.kernel.tensor = poplin::createMatMulInputRHS(g, dtype, dtype, x.shape(), kernelShape, l.kernel.tensor.getName(), matmulOptions, &cache);
+    l.kernel.tensor = poplin::createMatMulInputRHS(g, l.kernel.type, dtype, x.shape(), kernelShape, l.kernel.tensor.getName(), matmulOptions, &cache);
     std::string opPrefix = name + "/layer_" + std::to_string(i) + "_";
-    x = poplin::matMul(g, x, l.kernel.tensor, execModel, dtype, opPrefix + "matmul", matmulOptions, &cache);
+    x = poplin::matMul(g, x, l.kernel.tensor, execModel, l.kernel.type, opPrefix + "matmul", matmulOptions, &cache);
     // Bias if needed:
     if (l.hasBias()) {
-      l.bias.tensor = g.addVariable(dtype, l.bias.shape);
+      l.bias.tensor = g.addVariable(l.bias.type, l.bias.shape);
       g.setTileMapping(l.bias.tensor, g.getTileMapping(x[0]));
       popops::addInPlace(g, x, l.bias.tensor.get(), execModel, opPrefix + "add_bias");
     }
@@ -276,7 +296,7 @@ NifModel::buildInference(poplar::Graph& g,
   }
 
   if (decodeOnDevice) {
-    output = buildDecodeOuput(g, x, execModel);
+    output = buildDecodeOutput(g, x, execModel);
   } else {
     output = x;
   }
@@ -334,10 +354,10 @@ void NifModel::connectStreams(poplar::Engine& engine) {
   }
 
   for (auto& l : layers) {
-    ipu_utils::logger()->trace("NifModel '{}': Connecting weight stream: ({} elements)", name, l.kernel.data.size());
+    ipu_utils::logger()->trace("NifModel '{}': Connecting weight stream: ({} bytes)", name, l.kernel.data.size());
     l.kernel.tensor.connectWriteStream(engine, l.kernel.data);
     if (l.hasBias()) {
-      ipu_utils::logger()->trace("NifModel '{}': Connecting weight stream: ({} elements)", name, l.bias.data.size());
+      ipu_utils::logger()->trace("NifModel '{}': Connecting bias stream: ({} bytes)", name, l.bias.data.size());
       l.bias.tensor.connectWriteStream(engine, l.bias.data);
     }
   }

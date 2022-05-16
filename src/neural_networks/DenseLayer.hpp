@@ -1,19 +1,20 @@
 #pragma once
 
 struct HostTensor {
-  HostTensor(const std::vector<std::size_t>& shape, const std::string& name)
-    : shape(shape), tensor(name) {}
+  HostTensor(const std::vector<std::size_t>& shape, poplar::Type dtype, const std::string& name)
+    : shape(shape), tensor(name), type(dtype) {}
 
   std::vector<std::size_t> shape;
   ipu_utils::StreamableTensor tensor;
-  std::vector<float> data;
+  poplar::Type type;
+  std::vector<std::uint8_t> data;
 };
 
 struct DenseLayer {
-  DenseLayer(const std::vector<std::size_t>& shape, const std::string& activation, const std::string& layerName)
+  DenseLayer(const std::vector<std::size_t>& shape, poplar::Type dtype, const std::string& activation, const std::string& layerName)
   :
-    kernel(shape, layerName + "/kernel"),
-    bias({shape.back()}, layerName + "/bias"),
+    kernel(shape, dtype, layerName + "/kernel"),
+    bias({shape.back()}, dtype, layerName + "/bias"),
     activationFunction(activation)
   {}
 
