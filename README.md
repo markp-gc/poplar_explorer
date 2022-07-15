@@ -4,7 +4,8 @@ The purpose of this tool is to enable rapid prototyping of Poplar/Poplibs progra
 a framework which takes care of all boiler plate setup code and provides access to multiple
 tools with a unified command line interface and features (e.g. graph executable save/load, compilation
 progress and consistent logging). Compatible tools are auto discovered at build configuration time
-to make adding new programs as easy as possible.
+to make adding new programs as easy as possible. Some simple example tools are provided e.g. for
+running matrix-multiply benchmarks.
 
 ## Configuration and Building
 
@@ -15,7 +16,7 @@ Install the Poplar SDK following the instructions in the Getting Started guide f
 2) Install apt dependencies, configure, and build.
 
 ```
-sudo apt install cmake ninja-build libspdlog-dev libhdf5-dev libopencv-dev libboost-all-dev
+sudo apt install cmake ninja-build libspdlog-dev libboost-all-dev
 mkdir build
 cd build
 cmake ../ -G Ninja

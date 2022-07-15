@@ -95,8 +95,8 @@ void parseOptions(int argc, char** argv,
   ("compile-only", po::bool_switch()->default_value(false),
    "If set and save-exe is also set then exit after compiling and saving the graph."
   )
-  ("defer-attach", po::bool_switch()->default_value(false),
-  "If false (default) then a device is reserved before compilation, otherwise the device is not acquired until the program is ready to run."
+  ("attach-immediately", po::bool_switch()->default_value(false),
+  "If false (default) then the device is not acquired until the program is ready to run, if true then the device is acquired before compilation but this does not currently work on IPUOF systems (program will abort)."
   )
   ("log-level", po::value<std::string>()->default_value("debug"),
   "Set the log level to one of the following: 'trace', 'debug', 'info', 'warn', 'err', 'critical', 'off'.")
@@ -132,7 +132,7 @@ ipu_utils::RuntimeConfig configFromOptions(const boost::program_options::variabl
     !args.at("save-exe").as<std::string>().empty(),
     !args.at("load-exe").as<std::string>().empty(),
     args.at("compile-only").as<bool>(),
-    args.at("compile-only").as<bool>() || args.at("defer-attach").as<bool>()
+    args.at("compile-only").as<bool>() || !args.at("attach-immediately").as<bool>()
   };
 }
 
