@@ -20,7 +20,7 @@ include_directories(
 file(GLOB TOOL_HEADERS ${PROJECT_SOURCE_DIR}/src/tools/*.hpp)
 file(GLOB TOOL_SRC ${PROJECT_SOURCE_DIR}/src/tools/*.cpp)
 add_library(tools SHARED ${TOOL_HEADERS} ${TOOL_SRC})
-target_link_libraries(tools -lpoplar -lpopops -lgcl_ct -lpopart)
+target_link_libraries(tools -lpoplar -lpopops -lgcl_ct)
 
 # Auto detect the available tools at configuration time:
 set(GENERATED_TOOLS_FILE ${CMAKE_SOURCE_DIR}/include/cmake_discovered_tools.hpp)
