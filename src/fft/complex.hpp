@@ -1,5 +1,7 @@
 // Copyright (c) 2022 Graphcore Ltd. All rights reserved.
 
+#pragma once
+
 #include <vector>
 
 #include <poplar/Graph.hpp>
