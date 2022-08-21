@@ -178,8 +178,7 @@ if __name__ == "__main__":
   length = args.fft_size
   X = np.arange(0, 1, 1.0/length)
   Y = np.multiply(X, X + (1-X) * 1j)
-  print(f"x: {X}")
-  print(f"y: {Y}\n")
+  print(f"Complex input vector:\n{Y}\n")
 
   # Compute 1D-FFT and compare result against scipy:
   N = len(Y)

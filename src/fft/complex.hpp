@@ -38,6 +38,11 @@ struct ComplexTensor {
     imag = graph.addVariable(type, shape, debugPrefix + "/imag");
   }
 
+  /// Return the shape of the complex Tensor.
+  std::vector<std::size_t> shape() const { return real.shape(); }
+  std::size_t rank() const { return real.rank(); }
+  std::size_t dim(unsigned i) const { return real.dim(i); }
+
   /// Map the real and imaginary parts linearly
   /// (and separately) across tiles. 
   void mapLinearly(poplar::Graph& graph) {

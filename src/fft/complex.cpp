@@ -35,13 +35,15 @@ namespace complex {
 
   std::pair<ComplexTensor, ComplexTensor>
   ComplexTensor::splitOddEven() {
-    if (real.rank() != 1) {
-      throw std::logic_error("ComplexTensor: This function is only for vectors.");
+    if (real.rank() != 1 && real.rank() != 2) {
+      throw std::logic_error("ComplexTensor: This function is only for vectors and batches of vectors.");
     }
-    auto reEven = real.subSample(2, 0);
-    auto imEven = imag.subSample(2, 0);
-    auto reOdd = real.slice(1, real.numElements()).subSample(2, 0);
-    auto imOdd = imag.slice(1, imag.numElements()).subSample(2, 0);
+    const auto subSampleDim = real.rank() == 1 ? 0 : 1;
+    const auto vectorLength = real.rank() == 1 ? real.dim(0) : real.dim(1);
+    auto reEven = real.subSample(2, subSampleDim);
+    auto imEven = imag.subSample(2, subSampleDim);
+    auto reOdd = real.slice(1, vectorLength, subSampleDim).subSample(2, subSampleDim);
+    auto imOdd = imag.slice(1, vectorLength, subSampleDim).subSample(2, subSampleDim);
     return std::make_pair(ComplexTensor(reEven, imEven),
                           ComplexTensor(reOdd, imOdd));
   }
@@ -90,6 +92,12 @@ namespace complex {
     ipu_utils::logger()->debug("DFT Re-Matmul shape: {} x {}", matrix.real.shape(), realBatch.shape());
     ipu_utils::logger()->debug("DFT Im-Matmul shape: {} x {}", matrix.imag.shape(), imagBatch.shape());
 
+    // Re-map the Fourier matrices here:
+    auto matmulMapping = poplin::createMatMulInputLHS(graph, elemType, matrix.shape(), realBatch.shape(),
+                                                      "for_mapping_only");
+    graph.setTileMapping(matrix.real, graph.getTileMapping(matmulMapping));
+    graph.setTileMapping(matrix.imag, graph.getTileMapping(matmulMapping));
+
     poplar::Tensor partial =
       poplin::matMul(graph, matrix.real, realBatch, prog,
                      elemType, debugStr + "/real_matmul");
@@ -102,7 +110,7 @@ namespace complex {
 
   ComplexTensor FFTBuilder::dft1d(ComplexTensor fourierMatrix,
                       ComplexTensor odd, ComplexTensor even) {
-    // Split the odd and even into real and imaginary batches:
+    // Combine the odd and even chunks into real and imaginary batches:
     auto real = hstack({odd.real, even.real});
     auto imag = hstack({odd.imag, even.imag});
     return multiplyMatrixByVectorBatch(fourierMatrix, ComplexTensor(real, imag));
@@ -115,7 +123,13 @@ namespace complex {
     // algorithm. To get the half size FT problem extract
     // odd and even, real and imaginary, coefficients:
     const auto elemType = input.real.elementType();
-    const auto fftSize = input.real.numElements();
+
+    // This is a 1D FFT on a batch of vectors so choose
+    // the correct axis for the vector length:
+    const auto batchSize = input.rank() == 1 ? 1 : input.dim(0);
+    const auto fftSize = input.rank() == 1 ? input.dim(0) : input.dim(1);
+
+    ipu_utils::logger()->debug("FFT-1D input shape: {}", input.shape());
 
     if (fftSize % 2) {
       throw std::logic_error("FFT size must be a multiple of 2.");
@@ -126,11 +140,9 @@ namespace complex {
     std::tie(even, odd) = input.splitOddEven();
 
     auto invF = inverseFourierMatrices(splitPoint, elemType);
-    poputil::mapTensorLinearly(graph, invF.real);
-    poputil::mapTensorLinearly(graph, invF.imag);
 
     auto dftResult = dft1d(invF, even, odd);
-    ipu_utils::logger()->debug("DFT-1D result shapes: re: {} im: {}", dftResult.real.shape(), dftResult.imag.shape());
+    ipu_utils::logger()->debug("DFT-1D result shape: {}", dftResult.shape());
 
     // Now apply the remaining part of factorised
     // inverse Fourier matrix to get the final
@@ -138,20 +150,19 @@ namespace complex {
     auto w = twiddleCoefficients(fftSize, elemType);
     poputil::mapTensorLinearly(graph, w.real);
     poputil::mapTensorLinearly(graph, w.imag);
-
-    ipu_utils::logger()->debug("Twiddle coeff shapes: re: {} im: {}", w.real.shape(), w.imag.shape());
+    ipu_utils::logger()->debug("Twiddle coeff shape: {}", w.shape());
 
     // Reconstruct the result by slicing from columns:
     // results come out in the same even/odd order that
     // we packed the input vectors:
     ComplexTensor result_even(
-      dftResult.real.transpose().slice(0, 1, 0),
-      dftResult.imag.transpose().slice(0, 1, 0)
+      dftResult.real.transpose().slice(0, batchSize, 0),
+      dftResult.imag.transpose().slice(0, batchSize, 0)
     );
 
     ComplexTensor result_odd(
-      dftResult.real.transpose().slice(1, 2, 0),
-      dftResult.imag.transpose().slice(1, 2, 0)
+      dftResult.real.transpose().slice(batchSize, 2*batchSize, 0),
+      dftResult.imag.transpose().slice(batchSize, 2*batchSize, 0)
     );
 
     // Element-wise multiply odd components by coefficients:
@@ -197,8 +208,7 @@ namespace complex {
     return ComplexTensor(reInvF, imInvF);
   }
 
-  ComplexTensor FFTBuilder::twiddleCoefficients(std::size_t N,
-                                    poplar::Type elemType) {
+  ComplexTensor FFTBuilder::twiddleCoefficients(std::size_t N, poplar::Type elemType) {
     // Return the complex coeeficients that recombine the partial results
     // of the FFT (I.e. coefficients that appear in left hand side of the
     // inverse Fourier matrix's FFT factorization).
