@@ -9,6 +9,7 @@
 
 #include "complex.hpp"
 #include "utils.hpp"
+#include "ipu_utils.hpp"
 
 template<typename T>
 std::ostream &operator <<(std::ostream &os, const std::vector<T> &v) {
@@ -86,6 +87,9 @@ namespace complex {
     auto imagBatch = poplar::concat(negIm, vectors.real, 1);
 
     // Build the matmuls:
+    ipu_utils::logger()->debug("DFT Re-Matmul shape: {} x {}", matrix.real.shape(), realBatch.shape());
+    ipu_utils::logger()->debug("DFT Im-Matmul shape: {} x {}", matrix.imag.shape(), imagBatch.shape());
+
     poplar::Tensor partial =
       poplin::matMul(graph, matrix.real, realBatch, prog,
                      elemType, debugStr + "/real_matmul");
@@ -126,6 +130,7 @@ namespace complex {
     poputil::mapTensorLinearly(graph, invF.imag);
 
     auto dftResult = dft1d(invF, even, odd);
+    ipu_utils::logger()->debug("DFT-1D result shapes: re: {} im: {}", dftResult.real.shape(), dftResult.imag.shape());
 
     // Now apply the remaining part of factorised
     // inverse Fourier matrix to get the final
@@ -133,6 +138,8 @@ namespace complex {
     auto w = twiddleCoefficients(fftSize, elemType);
     poputil::mapTensorLinearly(graph, w.real);
     poputil::mapTensorLinearly(graph, w.imag);
+
+    ipu_utils::logger()->debug("Twiddle coeff shapes: re: {} im: {}", w.real.shape(), w.imag.shape());
 
     // Reconstruct the result by slicing from columns:
     // results come out in the same even/odd order that
