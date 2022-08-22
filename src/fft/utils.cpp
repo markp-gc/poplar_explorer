@@ -7,7 +7,7 @@ poplar::Tensor vstack(const std::vector<poplar::Tensor>& vectors) {
   std::vector<poplar::Tensor> rowVectors;
   rowVectors.reserve(vectors.size());
   for (const auto& v : vectors) {
-    if (v.rank() != 1) {
+    if (v.rank() != 1 && v.rank() != 2) {
       throw std::logic_error("vstack operates only on vectors or batches of vectors.");
     }
     if (v.rank() == 1) {

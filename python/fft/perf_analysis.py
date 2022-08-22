@@ -18,10 +18,11 @@ def getPeakLivenessStep(report):
 
 # Parse the log of the `multi-tool FourierTransform` program:
 def getFFTInfoFromLog(log_file):
-  regx = re.compile("FFT of input-size ([-+]?[0-9]+) batch-size ([-+]?[0-9]+) completed in ([-+]?[0-9]+) cycles.")
+  regx = re.compile("FFT of input-size ([-+]?[0-9]+) batch-size ([-+]?[0-9]+) radix-size ([-+]?[0-9]+) completed in ([-+]?[0-9]+) cycles.")
   flop_regx = re.compile("estimated FLOP count: ([-+]?[0-9]+)")
   input_size = None
   batch_size = None
+  radix_size = None
   fft_cycles = None
   flops = None
   with open(args.log_file) as f:
@@ -31,13 +32,14 @@ def getFFTInfoFromLog(log_file):
         if match1:
           input_size = match1.group(1)
           batch_size = match1.group(2)
-          fft_cycles = match1.group(3)
+          radix_size = match1.group(3)
+          fft_cycles = match1.group(4)
         if match2:
           flops = match2.group(1)
 
   if fft_cycles is None or flops is None:
-    raise RuntimeError(f"Could not parse log file '{log_file}'")
-  return int(input_size), int(batch_size), int(fft_cycles), int(flops)
+    return None, None, None, None, None
+  return int(input_size), int(batch_size), int(radix_size), int(fft_cycles), int(flops)
 
 
 if __name__ == "__main__":
@@ -61,11 +63,12 @@ if __name__ == "__main__":
   peak_name, peak_live_memory = getPeakLivenessStep(report)
   print(f"Program step consuming peak memory: {peak_name} {peak_live_memory}")
 
-  size, bs, cycles, flops = getFFTInfoFromLog(args.log_file)
-  flops_per_cycle = flops/cycles
-  gflops_per_second = flops_per_cycle * args.clock_speed_ghz
+  size, bs, radix, cycles, flops = getFFTInfoFromLog(args.log_file)
+  flops_per_cycle = flops/cycles if flops else None
+  gflops_per_second = flops_per_cycle * args.clock_speed_ghz if flops_per_cycle else None
   print(f"Input size: {size}")
   print(f"Batch size: {bs}")
+  print(f"Radix size: {radix}")
   print(f"FFT Cycles: {cycles}")
   print(f"Estimated FLOP count: {flops}")
   print(f"FLOPS per cycle: {flops_per_cycle}")

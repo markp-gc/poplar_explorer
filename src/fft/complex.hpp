@@ -42,6 +42,10 @@ struct ComplexTensor {
   std::vector<std::size_t> shape() const { return real.shape(); }
   std::size_t rank() const { return real.rank(); }
   std::size_t dim(unsigned i) const { return real.dim(i); }
+  ComplexTensor transpose() const { return ComplexTensor(real.transpose(), imag.transpose()); }
+  ComplexTensor slice(std::size_t begin, std::size_t end, unsigned axis) const {
+    return ComplexTensor(real.slice(begin, end, axis), imag.slice(begin, end, axis));
+  }
 
   /// Map the real and imaginary parts linearly
   /// (and separately) across tiles. 
@@ -60,7 +64,7 @@ struct ComplexTensor {
 
   /// Split real and imaginary vectors by their odd and even indices.
   /// Excpets if this is not a vector.
-  std::pair<ComplexTensor, ComplexTensor> splitOddEven();
+  std::pair<ComplexTensor, ComplexTensor> splitEvenOdd();
 };
 
 /// Element-wise multiply of two complex tensors.
@@ -88,15 +92,15 @@ public:
   /// Build the compute graph that applies FFT to the given complex vector.
   /// The program will be appended to the sequence specified in construction
   /// of this object.
-  ComplexTensor fft1d(ComplexTensor input);
+  ComplexTensor fft1d(ComplexTensor input, std::size_t radix = 0);
 
   std::size_t getFlopEstimate() const { return flopEstimate; }
 
 private:
   // Utility functions used in construction of the FFT graph program.
   ComplexTensor multiplyMatrixByVectorBatch(const ComplexTensor matrix, ComplexTensor vectors);
-  ComplexTensor dft1d(ComplexTensor fourierMatrix, ComplexTensor odd, ComplexTensor even);
-  std::pair<ComplexTensor, ComplexTensor> splitOddEven(ComplexTensor input);
+  ComplexTensor dft1d(ComplexTensor fourierMatrix, ComplexTensor even, ComplexTensor odd);
+  std::pair<ComplexTensor, ComplexTensor> splitEvenOdd(ComplexTensor input);
   ComplexTensor inverseFourierMatrices(std::size_t length, poplar::Type elemType);
   ComplexTensor twiddleCoefficients(std::size_t N, poplar::Type elemType);
   std::size_t flopEstimate;

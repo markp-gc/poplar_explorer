@@ -34,7 +34,7 @@ namespace complex {
   }
 
   std::pair<ComplexTensor, ComplexTensor>
-  ComplexTensor::splitOddEven() {
+  ComplexTensor::splitEvenOdd() {
     if (real.rank() != 1 && real.rank() != 2) {
       throw std::logic_error("ComplexTensor: This function is only for vectors and batches of vectors.");
     }
@@ -112,14 +112,14 @@ namespace complex {
   }
 
   ComplexTensor FFTBuilder::dft1d(ComplexTensor fourierMatrix,
-                      ComplexTensor odd, ComplexTensor even) {
+                      ComplexTensor even, ComplexTensor odd) {
     // Combine the odd and even chunks into real and imaginary batches:
-    auto real = hstack({odd.real, even.real});
-    auto imag = hstack({odd.imag, even.imag});
+    auto real = hstack({even.real, odd.real});
+    auto imag = hstack({even.imag, odd.imag});
     return multiplyMatrixByVectorBatch(fourierMatrix, ComplexTensor(real, imag));
   }
 
-  ComplexTensor FFTBuilder::fft1d(ComplexTensor input) {
+  ComplexTensor FFTBuilder::fft1d(ComplexTensor input, std::size_t radix) {
     // Compute the 1D-FFT by decomposing the
     // Fourier matrix into an FFT of half the size
     // then compute final result using Cooley-Tukey
@@ -140,12 +140,35 @@ namespace complex {
     const auto splitPoint = fftSize / 2;
 
     complex::ComplexTensor even, odd;
-    std::tie(even, odd) = input.splitOddEven();
+    std::tie(even, odd) = input.splitEvenOdd();
+    complex::ComplexTensor fftSubResult;
 
-    auto invF = inverseFourierMatrices(splitPoint, elemType);
+    // Decide whether to execute a DFT or recursiuvely apply Cooley-Tukey-FFT:
+    if (radix == 0) {
+      // Radix of zero means automatically choose radix as half size of input:
+      radix = splitPoint;
+    }
 
-    auto dftResult = dft1d(invF, even, odd);
-    ipu_utils::logger()->debug("DFT-1D result shape: {}", dftResult.shape());
+    if (splitPoint == radix) {
+      // We have reached the specified radix size so
+      // can finish by applying the DFT matrices (ending any
+      // recursion):
+      auto invF = inverseFourierMatrices(splitPoint, elemType);
+      fftSubResult = dft1d(invF, even, odd);
+      ipu_utils::logger()->debug("DFT-1D result shape: {}", fftSubResult.shape());
+    } else {
+      // Recursively construct two FFTs of half the size
+      // but fold them into a single batched call to fft1d:
+      auto recursiveInput = complex::ComplexTensor(
+        vstack({even.real, odd.real}),
+        vstack({even.imag, odd.imag})
+      );
+      ipu_utils::logger()->debug("Recursive FFT-1D. Sub-problem input shape: {}", recursiveInput.shape());
+      auto fftResult = fft1d(recursiveInput, radix);
+      ipu_utils::logger()->debug("Sub-FFT-1D result shape: {}", fftResult.shape());
+      fftSubResult = fftResult.transpose();
+      ipu_utils::logger()->debug("DFT-1D result shape: {}", fftSubResult.shape());
+    }
 
     // Now apply the remaining part of factorised
     // inverse Fourier matrix to get the final
@@ -158,15 +181,8 @@ namespace complex {
     // Reconstruct the result by slicing from columns:
     // results come out in the same even/odd order that
     // we packed the input vectors:
-    ComplexTensor result_even(
-      dftResult.real.transpose().slice(0, batchSize, 0),
-      dftResult.imag.transpose().slice(0, batchSize, 0)
-    );
-
-    ComplexTensor result_odd(
-      dftResult.real.transpose().slice(batchSize, 2*batchSize, 0),
-      dftResult.imag.transpose().slice(batchSize, 2*batchSize, 0)
-    );
+    auto result_even = fftSubResult.transpose().slice(0, batchSize, 0);
+    auto result_odd = fftSubResult.transpose().slice(batchSize, 2*batchSize, 0);
 
     // Element-wise multiply odd components by coefficients:
     auto tmp = multiply(graph, w, result_odd, prog, "twiddle");

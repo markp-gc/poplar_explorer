@@ -29,7 +29,7 @@
 struct FourierTransform :
   public ipu_utils::BuilderInterface, public ToolInterface
 {
-  FourierTransform() {}
+  FourierTransform() : size(0), batchSize(0), radixSize(0) {}
   virtual ~FourierTransform() {}
 
   void build(poplar::Graph& graph, const poplar::Target&) override {
@@ -41,7 +41,7 @@ struct FourierTransform :
     complex::FFTBuilder builder(graph, fftSeq, "fft_builder");
     auto input = complex::ComplexTensor(graph, poplar::FLOAT, {batchSize, size}, "a");
     input.mapLinearly(graph);
-    auto output = builder.fft1d(input);
+    auto output = builder.fft1d(input, radixSize);
     ipu_utils::logger()->info("FFT1D estimated FLOP count: {}", builder.getFlopEstimate());
 
     auto cycleCount = poplar::cycleCount(graph, fftSeq, 0, poplar::SyncType::INTERNAL);
@@ -85,7 +85,8 @@ struct FourierTransform :
 
     uint64_t cycleCount = 0u;
     ipu_utils::readScalar(engine, "cycle_count", cycleCount);
-    ipu_utils::logger()->info("1D FFT of input-size {} batch-size {} completed in {} cycles.", size, batchSize, cycleCount);
+    ipu_utils::logger()->info("1D FFT of input-size {} batch-size {} radix-size {} completed in {} cycles.",
+                              size, batchSize, radixSize, cycleCount);
     if (size < 32u && batchSize < 5u) {
       for (auto b = 0u; b < batchSize; ++b) {
         ipu_utils::logger()->info("1D FFT result[{}] Re:\n{}\n", b, slice(realData, b * size, (b + 1) * size));
@@ -100,10 +101,19 @@ struct FourierTransform :
     ("fft-size", po::value<std::size_t>(&size)->default_value(1024),
      "Dimension of input vector to 1D FFT.")
     ("batch-size", po::value<std::size_t>(&batchSize)->default_value(1),
-     "Batch size for 1D FFT (i.e. number of input vectors).");
+     "Batch size for 1D FFT (i.e. number of input vectors).")
+    ("radix-size", po::value<std::size_t>(&radixSize)->default_value(0),
+     "Choose radix size (base case size at which DFT matrix-multiply is performed). The default (0) automatically "
+     "sets the radix to half the input size (i.e. no FFT recursion).");
   }
 
   void init(const boost::program_options::variables_map& args) override {
+    if (size % 2) {
+      throw std::logic_error("FFT input size must be a multiple of 2.");
+    }
+    if (radixSize == 0) {
+      radixSize = size / 2;
+    }
     realData.resize(size * batchSize);
     imagData.resize(size * batchSize);
   }
@@ -111,6 +121,7 @@ struct FourierTransform :
 private:
   std::size_t size;
   std::size_t batchSize;
+  std::size_t radixSize;
   std::vector<float> realData;
   std::vector<float> imagData;
 };
