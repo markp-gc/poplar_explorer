@@ -1,22 +1,23 @@
+# Copyright (c) 2022 Graphcore Ltd. All rights reserved.
 import pva
 import argparse
 import re
 
 
+# Find the name and bytes used for the program step with
+# highest not-always-live memory usage.
 def getPeakLivenessStep(report):
   peak_name = ""
   peak_live_memory = 0
   for step in report.compilation.livenessProgramSteps:
-    # It is possible that a step could contain more than 1 compute set
     if step.notAlwaysLiveMemory.bytes > peak_live_memory:
       peak_name = step.program.name
       peak_live_memory = step.notAlwaysLiveMemory.bytes
   return peak_name, peak_live_memory
 
 
+# Parse the log of the `multi-tool FourierTransform` program:
 def getFFTInfoFromLog(log_file):
-  # Read the log to get cycles flop estimates etc.
-  #
   regx = re.compile("FFT of input-size ([-+]?[0-9]+) batch-size ([-+]?[0-9]+) completed in ([-+]?[0-9]+) cycles.")
   flop_regx = re.compile("estimated FLOP count: ([-+]?[0-9]+)")
   input_size = None
@@ -70,6 +71,7 @@ if __name__ == "__main__":
   print(f"FLOPS per cycle: {flops_per_cycle}")
   print(f"GFLOPS/sec: {gflops_per_second}")
 
+  # Collate everything into one line of CSV and append to file if specififed:
   if args.csv_out:
     with open(args.csv_out, "a") as f:
       f.write(f"{size},{bs},{cycles},{flops_per_cycle},{gflops_per_second},{total_memory},{peak_name},{peak_live_memory}\n")
