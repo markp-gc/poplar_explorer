@@ -83,12 +83,14 @@ public:
   FFTBuilder(poplar::Graph &graph,
              poplar::program::Sequence &sequence,
              const std::string debugName)
-    : graph(graph), prog(sequence), debugPrefix(debugName) {}
+    : graph(graph), prog(sequence), debugPrefix(debugName), flopEstimate(0) {}
 
   /// Build the compute graph that applies FFT to the given complex vector.
   /// The program will be appended to the sequence specified in construction
   /// of this object.
   ComplexTensor fft1d(ComplexTensor input);
+
+  std::size_t getFlopEstimate() const { return flopEstimate; }
 
 private:
   // Utility functions used in construction of the FFT graph program.
@@ -97,6 +99,7 @@ private:
   std::pair<ComplexTensor, ComplexTensor> splitOddEven(ComplexTensor input);
   ComplexTensor inverseFourierMatrices(std::size_t length, poplar::Type elemType);
   ComplexTensor twiddleCoefficients(std::size_t N, poplar::Type elemType);
+  std::size_t flopEstimate;
 };
 
 } // namespace complex

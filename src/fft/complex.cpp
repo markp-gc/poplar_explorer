@@ -105,6 +105,9 @@ namespace complex {
     poplin::matMulAcc(graph, partial, 1.f, matrix.imag, imagBatch, prog,
                       debugStr + "/imag_matmul");
 
+    // FLOP estimates for matrix multiplies:
+    flopEstimate += 2 * matrix.dim(0) * matrix.dim(1) * realBatch.dim(1) * 2;
+
     return ComplexTensor(partial.slice(0, numVectors, 1), partial.slice(numVectors, 2 * numVectors, 1));
   }
 
@@ -167,6 +170,8 @@ namespace complex {
 
     // Element-wise multiply odd components by coefficients:
     auto tmp = multiply(graph, w, result_odd, prog, "twiddle");
+    // FLOP estimate forcomplex multiply:
+    flopEstimate += 6 * tmp.real.numElements();
 
     // Elementwise add for the twiddles (butterflies):
     poplar::Tensor lowerRe =
@@ -181,6 +186,9 @@ namespace complex {
     poplar::Tensor upperIm =
       popops::sub(graph, result_even.imag, tmp.imag,
                   prog, debugPrefix + "/twiddle_upper_imag");
+
+    // FLOP estimate for element-wise ops:
+    flopEstimate += 4 * tmp.real.numElements();
 
     return ComplexTensor(
       poplar::concat(lowerRe, upperRe, 1),

@@ -42,6 +42,7 @@ struct FourierTransform :
     auto input = complex::ComplexTensor(graph, poplar::FLOAT, {batchSize, size}, "a");
     input.mapLinearly(graph);
     auto output = builder.fft1d(input);
+    ipu_utils::logger()->info("FFT1D estimated FLOP count: {}", builder.getFlopEstimate());
 
     auto cycleCount = poplar::cycleCount(graph, fftSeq, 0, poplar::SyncType::INTERNAL);
     prog.add(fftSeq);
