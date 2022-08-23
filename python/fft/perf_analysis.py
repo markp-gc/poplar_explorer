@@ -20,15 +20,18 @@ def getPeakLivenessStep(report):
 def getFFTInfoFromLog(log_file):
   regx = re.compile("FFT of input-size ([-+]?[0-9]+) batch-size ([-+]?[0-9]+) radix-size ([-+]?[0-9]+) completed in ([-+]?[0-9]+) cycles.")
   flop_regx = re.compile("estimated FLOP count: ([-+]?[0-9]+)")
+  matmul_regx = re.compile("DFT Re-Matmul shape: [-+]?[0-9]+ [-+]?[0-9]+  x [-+]?[0-9]+ ([-+]?[0-9]+)")
   input_size = None
   batch_size = None
   radix_size = None
   fft_cycles = None
   flops = None
+  dft_batch_size = None
   with open(args.log_file) as f:
     for line in f:
         match1 = regx.search(line)
         match2 = flop_regx.search(line)
+        match3 = matmul_regx.search(line)
         if match1:
           input_size = match1.group(1)
           batch_size = match1.group(2)
@@ -36,10 +39,12 @@ def getFFTInfoFromLog(log_file):
           fft_cycles = match1.group(4)
         if match2:
           flops = match2.group(1)
+        if match3:
+          dft_batch_size = match3.group(1)
 
   if fft_cycles is None or flops is None:
-    return None, None, None, None, None
-  return int(input_size), int(batch_size), int(radix_size), int(fft_cycles), int(flops)
+    return None, None, None, None, None, None
+  return int(input_size), int(batch_size), int(radix_size), int(fft_cycles), int(flops), int(dft_batch_size)
 
 
 if __name__ == "__main__":
@@ -63,18 +68,19 @@ if __name__ == "__main__":
   peak_name, peak_live_memory = getPeakLivenessStep(report)
   print(f"Program step consuming peak memory: {peak_name} {peak_live_memory}")
 
-  size, bs, radix, cycles, flops = getFFTInfoFromLog(args.log_file)
+  size, bs, radix, cycles, flops, dft_batch_size = getFFTInfoFromLog(args.log_file)
   flops_per_cycle = flops/cycles if flops else None
   gflops_per_second = flops_per_cycle * args.clock_speed_ghz if flops_per_cycle else None
   print(f"Input size: {size}")
   print(f"Batch size: {bs}")
   print(f"Radix size: {radix}")
-  print(f"FFT Cycles: {cycles}")
+  print(f"FFT cycles: {cycles}")
   print(f"Estimated FLOP count: {flops}")
+  print(f"DFT batch size: {dft_batch_size}")
   print(f"FLOPS per cycle: {flops_per_cycle}")
   print(f"GFLOPS/sec: {gflops_per_second}")
 
   # Collate everything into one line of CSV and append to file if specififed:
   if args.csv_out:
     with open(args.csv_out, "a") as f:
-      f.write(f"{size},{bs},{cycles},{flops_per_cycle},{gflops_per_second},{total_memory},{peak_name},{peak_live_memory}\n")
+      f.write(f"{size},{bs},{cycles},{flops_per_cycle},{dft_batch_size},{gflops_per_second},{total_memory},{peak_name},{peak_live_memory}\n")
