@@ -165,9 +165,8 @@ namespace complex {
       );
       ipu_utils::logger()->debug("Recursive FFT-1D. Sub-problem input shape: {}", recursiveInput.shape());
       auto fftResult = fft1d(recursiveInput, radix);
-      ipu_utils::logger()->debug("Sub-FFT-1D result shape: {}", fftResult.shape());
       fftSubResult = fftResult.transpose();
-      ipu_utils::logger()->debug("DFT-1D result shape: {}", fftSubResult.shape());
+      ipu_utils::logger()->debug("Sub-FFT-1D result shape: {}", fftResult.shape());
     }
 
     // Now apply the remaining part of factorised
@@ -176,17 +175,17 @@ namespace complex {
     auto w = twiddleCoefficients(fftSize, elemType);
     poputil::mapTensorLinearly(graph, w.real);
     poputil::mapTensorLinearly(graph, w.imag);
-    ipu_utils::logger()->debug("Twiddle coeff shape: {}", w.shape());
 
     // Reconstruct the result by slicing from columns:
     // results come out in the same even/odd order that
     // we packed the input vectors:
     auto result_even = fftSubResult.transpose().slice(0, batchSize, 0);
     auto result_odd = fftSubResult.transpose().slice(batchSize, 2*batchSize, 0);
+    ipu_utils::logger()->debug("Twiddle coeff shape: {} and multiply shape: {}", w.shape(), result_odd.shape());
 
     // Element-wise multiply odd components by coefficients:
     auto tmp = multiply(graph, w, result_odd, prog, "twiddle");
-    // FLOP estimate forcomplex multiply:
+    // FLOP estimate for complex multiply:
     flopEstimate += 6 * tmp.real.numElements();
 
     // Elementwise add for the twiddles (butterflies):
