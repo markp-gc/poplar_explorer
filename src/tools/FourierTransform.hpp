@@ -41,8 +41,10 @@ struct FourierTransform :
     complex::FFTBuilder builder(graph, fftSeq, "fft_builder");
     auto input = complex::ComplexTensor(graph, poplar::FLOAT, {batchSize, size}, "a");
     input.mapLinearly(graph);
+
+    ipu_utils::logger()->info("Building FFT of input-size {} batch-size {} radix-size {}", size, batchSize, radixSize);
     auto output = builder.fft1d(input, radixSize);
-    ipu_utils::logger()->info("FFT1D estimated FLOP count: {}", builder.getFlopEstimate());
+    ipu_utils::logger()->info("FFT estimated FLOP count: {}", builder.getFlopEstimate());
 
     auto cycleCount = poplar::cycleCount(graph, fftSeq, 0, poplar::SyncType::INTERNAL);
     prog.add(fftSeq);
@@ -85,8 +87,7 @@ struct FourierTransform :
 
     uint64_t cycleCount = 0u;
     ipu_utils::readScalar(engine, "cycle_count", cycleCount);
-    ipu_utils::logger()->info("1D FFT of input-size {} batch-size {} radix-size {} completed in {} cycles.",
-                              size, batchSize, radixSize, cycleCount);
+    ipu_utils::logger()->info("FFT completed in {} cycles.", cycleCount);
     if (size < 32u && batchSize < 5u) {
       for (auto b = 0u; b < batchSize; ++b) {
         ipu_utils::logger()->info("1D FFT result[{}] Re:\n{}\n", b, slice(realData, b * size, (b + 1) * size));

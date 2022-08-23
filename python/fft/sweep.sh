@@ -6,9 +6,9 @@ RUN_DIR="profiles"
 mkdir -p $RUN_DIR
 CSV_FILE=${RUN_DIR}/"csv_results.txt"
 
-for SIZE in 128 256 512 1024 2048 4096 8192 16384 32768
+for SIZE in 4096 8192
 do
-  for BS in 1 2 4 8 16 32 64 128 256
+  for BS in 1 128 512
   do
     for RADIX in 32 64 128 256 512 1024 2048
     do
@@ -16,11 +16,16 @@ do
       export POPLAR_ENGINE_OPTIONS="{\"autoReport.all\":\"true\", \"autoReport.directory\":\"${RUN_DIR}/${RUN_NAME}\", \"profiler.includeFlopEstimates\":\"true\"}"
       echo "Running size: ${SIZE} batch-size: ${BS} radix: ${RADIX}"
       mkdir -p ${RUN_DIR}/${RUN_NAME}
-      ./multi-tool FourierTransform --fft-size ${SIZE} --batch-size ${BS} --radix-size ${RADIX} > ${RUN_DIR}/${RUN_NAME}/run_log.txt
+      ./multi-tool FourierTransform --fft-size ${SIZE} --batch-size ${BS} --radix-size ${RADIX} > ${RUN_DIR}/${RUN_NAME}/run_log.txt &
     done
+    wait
   done
 done
 
+# Overwrite the CSV file writing new headers:
+python ../python/fft/perf_analysis.py --report-file fake --log-file fake --csv-out ${CSV_FILE} --csv-write-headers
+
+# Append all run results to CSV file:
 for DIR in $RUN_DIR/*
 do
   LOG_FILE=$DIR/run_log.txt

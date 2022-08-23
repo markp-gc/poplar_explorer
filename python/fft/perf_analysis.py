@@ -18,7 +18,8 @@ def getPeakLivenessStep(report):
 
 # Parse the log of the `multi-tool FourierTransform` program:
 def getFFTInfoFromLog(log_file):
-  regx = re.compile("FFT of input-size ([-+]?[0-9]+) batch-size ([-+]?[0-9]+) radix-size ([-+]?[0-9]+) completed in ([-+]?[0-9]+) cycles.")
+  sizes_regx = re.compile("Building FFT of input-size ([-+]?[0-9]+) batch-size ([-+]?[0-9]+) radix-size ([-+]?[0-9]+)")
+  cycles_regx = re.compile("FFT completed in ([-+]?[0-9]+) cycles.")
   flop_regx = re.compile("estimated FLOP count: ([-+]?[0-9]+)")
   matmul_regx = re.compile("DFT Re-Matmul shape: [-+]?[0-9]+ [-+]?[0-9]+  x [-+]?[0-9]+ ([-+]?[0-9]+)")
   input_size = None
@@ -29,21 +30,27 @@ def getFFTInfoFromLog(log_file):
   dft_batch_size = None
   with open(args.log_file) as f:
     for line in f:
-        match1 = regx.search(line)
-        match2 = flop_regx.search(line)
-        match3 = matmul_regx.search(line)
+        match1 = sizes_regx.search(line)
+        match2 = cycles_regx.search(line)
+        match3 = flop_regx.search(line)
+        match4 = matmul_regx.search(line)
         if match1:
           input_size = match1.group(1)
           batch_size = match1.group(2)
           radix_size = match1.group(3)
-          fft_cycles = match1.group(4)
         if match2:
-          flops = match2.group(1)
+          fft_cycles = match2.group(1)
         if match3:
-          dft_batch_size = match3.group(1)
+          flops = match3.group(1)
+        if match4:
+          dft_batch_size = match4.group(1)
+
+  if input_size is None:
+    raise RuntimeError("Could not parse log file.")
 
   if fft_cycles is None or flops is None:
-    return None, None, None, None, None, None
+    # Was probably out of memory or other error in this case so still return the sizes:
+    return int(input_size), int(batch_size), int(radix_size), None, None, int(dft_batch_size)
   return int(input_size), int(batch_size), int(radix_size), int(fft_cycles), int(flops), int(dft_batch_size)
 
 
@@ -57,9 +64,20 @@ if __name__ == "__main__":
                     help='Clock speed in GHz used to compute the FLOP rate. Default is 1.85GHz (BOW-2000)')   
   parser.add_argument('--csv-out', default=None, type=str,
                     help='Optional CSV filename to which stats will be appended.')
+  parser.add_argument('--csv-write-headers', action="store_true",
+                    help='Write the column headers to the file specified by `--csv-out`.')
   args = parser.parse_args()
-  report = pva.openReport(args.report_file)
 
+  if args.csv_write_headers:
+    if args.csv_out:
+      print("Writing CSV headers")
+      with open(args.csv_out, "w") as f:
+        f.write(f"Input-size,Batch-size,Radix-size,DFT Batch-size,Cycles,FLOPS Estimate,FLOPS/Cycle,GFLOPS/sec,Memory Including Gaps (bytes),Peak Live Memory Step, Peak Live Memory (bytes)\n")
+      exit()
+    else:
+      raise RuntimeError("Can't write headers: no output file specified.")
+
+  report = pva.openReport(args.report_file)
   print(f"Poplar Version: {report.poplarVersion.string}")
 
   total_memory = sum(tile.memory.total.includingGaps for tile in report.compilation.tiles)
@@ -83,4 +101,4 @@ if __name__ == "__main__":
   # Collate everything into one line of CSV and append to file if specififed:
   if args.csv_out:
     with open(args.csv_out, "a") as f:
-      f.write(f"{size},{bs},{cycles},{flops_per_cycle},{dft_batch_size},{gflops_per_second},{total_memory},{peak_name},{peak_live_memory}\n")
+      f.write(f"{size},{bs},{radix},{dft_batch_size},{cycles},{flops},{flops_per_cycle},{gflops_per_second},{total_memory},{peak_name},{peak_live_memory}\n")
