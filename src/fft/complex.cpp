@@ -70,7 +70,10 @@ namespace complex {
     // radixes in two real matmuls by batching all the components and multiplying
     // by the FFT matrix's real and imaginary parts separately, then recombining
     // the result. This is just the matrix equivalent of complex multiplication:
-    // M * V = [Re(M)*Re(V) - Im(M)*Re(V)] + j[Im(M)*Re(V) + Re(M)*Im(V)]
+    // M * V = [Re(M)*Re(V) - Im(M)*Im(V)] + j[Im(M)*Re(V) + Re(M)*Im(V)]
+    // but performed with only two matmuls by concatenating the vecrtors on the
+    // right hand sides into a batches like this:
+    // Re(M) * [ Re(V) : Im(V) ] + Im(M) * [ -Im(V) : Re(V) ]
     if (vectors.real.shape() != vectors.imag.shape()) {
       throw std::logic_error("Real and imaginary shapes must match.");
     }
