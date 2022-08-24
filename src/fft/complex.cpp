@@ -144,7 +144,7 @@ namespace complex {
     complex::ComplexTensor fftSubResult;
 
     // Decide whether to execute a DFT or recursiuvely apply Cooley-Tukey-FFT:
-    if (radix == 0) {
+    if (radix == 0 || radix > splitPoint) {
       // Radix of zero means automatically choose radix as half size of input:
       radix = splitPoint;
     }
@@ -182,6 +182,21 @@ namespace complex {
     auto result_even = fftSubResult.transpose().slice(0, batchSize, 0);
     auto result_odd = fftSubResult.transpose().slice(batchSize, 2*batchSize, 0);
     ipu_utils::logger()->debug("Twiddle coeff shape: {} and multiply shape: {}", w.shape(), result_odd.shape());
+
+    // Copy the DFT results to a layout matching the twiddle coefficients:
+    auto result_even_remapped = result_even.clone(graph, "dft_even_remapped", poplar::TensorCloneMethod::CREATE_NEW_ORDER);
+    graph.setTileMapping(result_even_remapped.real, graph.getTileMapping(w.real));
+    graph.setTileMapping(result_even_remapped.imag, graph.getTileMapping(w.imag));
+    prog.add(poplar::program::Copy(result_even.real, result_even_remapped.real));
+    prog.add(poplar::program::Copy(result_even.imag, result_even_remapped.imag));
+    result_even = result_even_remapped;
+
+    auto result_odd_remapped = result_odd.clone(graph, "dft_odd_remapped", poplar::TensorCloneMethod::CREATE_NEW_ORDER);
+    graph.setTileMapping(result_odd_remapped.real, graph.getTileMapping(w.real));
+    graph.setTileMapping(result_odd_remapped.imag, graph.getTileMapping(w.imag));
+    prog.add(poplar::program::Copy(result_odd.real, result_odd_remapped.real));
+    prog.add(poplar::program::Copy(result_odd.imag, result_odd_remapped.imag));
+    result_odd = result_odd_remapped;
 
     // Element-wise multiply odd components by coefficients:
     auto tmp = multiply(graph, w, result_odd, prog, "twiddle");

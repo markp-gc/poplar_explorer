@@ -33,7 +33,7 @@ struct ComplexTensor {
   ComplexTensor(poplar::Graph& graph,
                 poplar::Type type,
                 poplar::ArrayRef<std::size_t> shape,
-                std::string debugPrefix) {
+                const std::string& debugPrefix) {
     real = graph.addVariable(type, shape, debugPrefix + "/real");
     imag = graph.addVariable(type, shape, debugPrefix + "/imag");
   }
@@ -52,6 +52,15 @@ struct ComplexTensor {
   void mapLinearly(poplar::Graph& graph) {
     poputil::mapTensorLinearly(graph, real);
     poputil::mapTensorLinearly(graph, imag);
+  }
+
+  /// Make a new complex tensor that clones this one's real
+  /// and imaginary tensors:
+  ComplexTensor clone(poplar::Graph& graph, const std::string& debugPrefix, poplar::TensorCloneMethod method) const {
+    return ComplexTensor(
+      graph.clone(real, debugPrefix, method),
+      graph.clone(imag, debugPrefix, method)
+    );
   }
 
   /// Concatenate the real and imaginary parts as row vectors.

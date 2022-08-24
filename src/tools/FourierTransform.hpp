@@ -115,6 +115,9 @@ struct FourierTransform :
     if (radixSize == 0) {
       radixSize = size / 2;
     }
+    if (radixSize > size / 2) {
+      throw std::runtime_error("Radix size can not be greater than half the input size.");
+    }
     realData.resize(size * batchSize);
     imagData.resize(size * batchSize);
   }
