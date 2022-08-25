@@ -74,6 +74,11 @@ struct ComplexTensor {
   /// Split real and imaginary vectors by their odd and even indices.
   /// Excpets if this is not a vector.
   std::pair<ComplexTensor, ComplexTensor> splitEvenOdd();
+
+  void multiplyInPlace(poplar::Graph& graph,
+                       const ComplexTensor v,
+                       poplar::program::Sequence& prog,
+                       const std::string& debugPrefix="");
 };
 
 /// Element-wise multiply of two complex tensors.

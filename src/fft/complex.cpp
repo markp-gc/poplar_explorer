@@ -48,20 +48,38 @@ namespace complex {
                           ComplexTensor(reOdd, imOdd));
   }
 
+  void ComplexTensor::multiplyInPlace(poplar::Graph& graph,
+                                      const ComplexTensor v,
+                                      poplar::program::Sequence& prog,
+                                      const std::string& debugPrefix) {
+    namespace pe = popops::expr;
+    auto complexMulExprRe = pe::Sub(pe::Mul(pe::_1, pe::_2), pe::Mul(pe::_3, pe::_4));
+    auto complexMulExprIm = pe::Add(pe::Mul(pe::_1, pe::_2), pe::Mul(pe::_3, pe::_4));
+    popops::mapInPlace(graph, complexMulExprRe, {real, v.real, imag, v.imag},
+                       prog, debugPrefix + "/complex_mul_re");
+    popops::mapInPlace(graph, complexMulExprIm, {imag, v.real, real, v.imag},
+                       prog, debugPrefix + "/complex_mul_im");
+  }
+
   ComplexTensor multiply(poplar::Graph& graph,
                          const ComplexTensor v1,
                          const ComplexTensor v2,
                          poplar::program::Sequence& prog,
                          const std::string& debugPrefix) {
-    auto debugStr = debugPrefix + "/complex_mul";
-    auto reTmp1 = popops::mul(graph, v1.real, v2.real, prog, debugStr);
-    auto reTmp2 = popops::mul(graph, v1.imag, v2.imag, prog, debugStr);
-    auto imTmp1 = popops::mul(graph, v1.real, v2.imag, prog, debugStr);
-    auto imTmp2 = popops::mul(graph, v1.imag, v2.real, prog, debugStr);
+    namespace pe = popops::expr;
+    auto re_v1 = pe::_1;
+    auto im_v1 = pe::_2;
+    auto re_v2 = pe::_3;
+    auto im_v2 = pe::_4;
+    auto complexMulExprRe = pe::Sub(pe::Mul(re_v1, re_v2), pe::Mul(im_v1, im_v2));
+    auto complexMulExprIm = pe::Add(pe::Mul(re_v1, im_v2), pe::Mul(im_v1, re_v2));
 
-    auto re = popops::sub(graph, reTmp1, reTmp2, prog, debugStr);
-    auto im = popops::add(graph, imTmp1, imTmp2, prog, debugStr);
-    return ComplexTensor(re, im);
+    return ComplexTensor(
+      popops::map(graph, complexMulExprRe, {v1.real, v1.imag, v2.real, v2.imag},
+                  prog, debugPrefix + "/complex_mul_re"),
+      popops::map(graph, complexMulExprIm, {v1.real, v1.imag, v2.real, v2.imag},
+                  prog, debugPrefix + "/complex_mul_im")
+    );
   }
 
   ComplexTensor FFTBuilder::multiplyMatrixByVectorBatch(
@@ -202,7 +220,9 @@ namespace complex {
     result_odd = result_odd_remapped;
 
     // Element-wise multiply odd components by coefficients:
-    auto tmp = multiply(graph, w, result_odd, prog, "twiddle");
+    //auto tmp = multiply(graph, w, result_odd, prog, "twiddle");
+    result_odd.multiplyInPlace(graph, w, prog, "twiddle");
+    auto tmp = result_odd;
     // FLOP estimate for complex multiply:
     flopEstimate += 6 * tmp.real.numElements();
 
