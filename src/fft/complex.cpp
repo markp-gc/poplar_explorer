@@ -55,10 +55,13 @@ namespace complex {
     namespace pe = popops::expr;
     auto complexMulExprRe = pe::Sub(pe::Mul(pe::_1, pe::_2), pe::Mul(pe::_3, pe::_4));
     auto complexMulExprIm = pe::Add(pe::Mul(pe::_1, pe::_2), pe::Mul(pe::_3, pe::_4));
-    popops::mapInPlace(graph, complexMulExprRe, {real, v.real, imag, v.imag},
-                       prog, debugPrefix + "/complex_mul_re");
+
+    // Can only do the second expression in-place:
+    auto tmpReal = popops::map(graph, complexMulExprRe, {real, v.real, imag, v.imag},
+                               prog, debugPrefix + "/complex_mul_re");
     popops::mapInPlace(graph, complexMulExprIm, {imag, v.real, real, v.imag},
                        prog, debugPrefix + "/complex_mul_im");
+    real = tmpReal;
   }
 
   ComplexTensor multiply(poplar::Graph& graph,
@@ -223,9 +226,8 @@ namespace complex {
     result_odd = result_odd_remapped;
 
     // Element-wise multiply odd components by coefficients:
-    auto tmp = multiply(graph, w, result_odd, prog, "twiddle");
-    //result_odd.multiplyInPlace(graph, w, prog, "twiddle");
-    //auto tmp = result_odd;
+    result_odd.multiplyInPlace(graph, w, prog, "twiddle");
+    auto tmp = result_odd;
     // FLOP estimate for complex multiply:
     flopEstimate += 6 * tmp.real.numElements();
 
