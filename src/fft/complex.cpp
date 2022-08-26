@@ -214,16 +214,21 @@ namespace complex {
     auto result_odd = fftSubResult.transpose().slice(batchSize, 2*batchSize, 0);
     ipu_utils::logger()->debug("Twiddle coeff shape: {} and multiply shape: {}", w.shape(), result_odd.shape());
 
-    // Copy the DFT results to a linear layout:
-    auto result_even_remapped = ComplexTensor(graph, result_even.elementType(), result_even.shape(), "dft_even_remapped");
-    result_even_remapped.mapLinearly(graph);
-    prog.add(copy(result_even, result_even_remapped));
-    result_even = result_even_remapped;
+    // Copy the DFT results to a linear layout if there are enough
+    // elements for this to make sense (this heuristic is very approximate):
+    if (result_even.real.numElements() > graph.getTarget().getNumTiles()) {
+      ipu_utils::logger()->debug("Re-mapping DFT result ({} > {}).",
+                                 result_even.real.numElements(), graph.getTarget().getNumTiles());
+      auto result_even_remapped = ComplexTensor(graph, result_even.elementType(), result_even.shape(), "dft_even_remapped");
+      result_even_remapped.mapLinearly(graph);
+      prog.add(copy(result_even, result_even_remapped));
+      result_even = result_even_remapped;
 
-    auto result_odd_remapped = ComplexTensor(graph, result_even.elementType(), result_even.shape(), "dft_even_remapped");
-    result_odd_remapped.mapLinearly(graph);
-    prog.add(copy(result_odd, result_odd_remapped));
-    result_odd = result_odd_remapped;
+      auto result_odd_remapped = ComplexTensor(graph, result_even.elementType(), result_even.shape(), "dft_even_remapped");
+      result_odd_remapped.mapLinearly(graph);
+      prog.add(copy(result_odd, result_odd_remapped));
+      result_odd = result_odd_remapped;
+    }
 
     // Element-wise multiply odd components by coefficients:
     result_odd.multiplyInPlace(graph, w, prog, "twiddle");
