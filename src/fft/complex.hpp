@@ -39,6 +39,7 @@ struct ComplexTensor {
   }
 
   /// Return the shape of the complex Tensor.
+  poplar::Type elementType() const { return real.elementType(); }
   std::vector<std::size_t> shape() const { return real.shape(); }
   std::size_t rank() const { return real.rank(); }
   std::size_t dim(unsigned i) const { return real.dim(i); }
@@ -87,6 +88,9 @@ ComplexTensor multiply(poplar::Graph& graph,
                         const ComplexTensor v2,
                         poplar::program::Sequence& prog,
                         const std::string& debugPrefix="");
+
+/// Create copy program for both real and imaginary parts:
+poplar::program::Sequence copy(const ComplexTensor& src, const ComplexTensor& dst);
 
 /// Class to aid graph construction of a 1D Fast-Fourier-Transform.
 class FFTBuilder {
