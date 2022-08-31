@@ -116,6 +116,20 @@ public:
   /// of this object.
   ComplexTensor fft1d(ComplexTensor input, std::size_t radix = 0);
 
+  /// Build a compute graph that applies a 2D-FFT to a complex matrix.
+  /// The computation will be serialised into chunks determined by the
+  /// serialisation factor. For large FFTs you will need to increase
+  /// the serialisation factor to reduce memory consumption.
+  ///
+  /// Unlike fft1d the transform is computed in-place (returned tensor is
+  /// the input tensor).
+  ///
+  /// The program will be appended to the sequence specified in
+  /// construction of this object.
+  ComplexTensor fft2d(ComplexTensor input, std::size_t radix, std::size_t serialisationFactor=1);
+
+  /// Return the sum of FLOPs counted during all FFT building performed by this object.
+  /// The counts are coarse estimates, not the exact number of FLOPs executed by the hardware.
   std::size_t getFlopEstimate() const { return flopEstimate; }
 
 private:

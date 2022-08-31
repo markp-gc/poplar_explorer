@@ -123,16 +123,16 @@ namespace complex {
     ipu_utils::logger()->debug("DFT Re-Matmul shape: {} x {}", matrix.real.shape(), realBatch.shape());
     ipu_utils::logger()->debug("DFT Im-Matmul shape: {} x {}", matrix.imag.shape(), imagBatch.shape());
 
-    // Re-map the Fourier matrices here:
-    auto matmulMapping = poplin::createMatMulInputLHS(graph, elemType, matrix.shape(), realBatch.shape(),
-                                                      "for_mapping_only");
-    graph.setTileMapping(matrix.real, graph.getTileMapping(matmulMapping));
-    graph.setTileMapping(matrix.imag, graph.getTileMapping(matmulMapping));
-
     poplar::OptionFlags matmulOptions;
     if (availableMemoryProportion > 0.f) {
       matmulOptions.set("availableMemoryProportion", std::to_string(availableMemoryProportion));
     }
+
+    // Re-map the Fourier matrices here:
+    auto matmulMapping = poplin::createMatMulInputLHS(graph, elemType, matrix.shape(), realBatch.shape(),
+                                                      debugStr + "/fourier_matrix_mapping", matmulOptions);
+    graph.setTileMapping(matrix.real, graph.getTileMapping(matmulMapping));
+    graph.setTileMapping(matrix.imag, graph.getTileMapping(matmulMapping));
 
     poplar::Tensor partial =
       poplin::matMul(graph, matrix.real, realBatch, prog,
@@ -236,7 +236,8 @@ namespace complex {
     }
 
     // Element-wise multiply odd components by coefficients:
-    result_odd.multiplyInPlace(graph, w, prog, "twiddle");
+    auto twiddlePrefix = debugPrefix + "/twiddle";
+    result_odd.multiplyInPlace(graph, w, prog, twiddlePrefix);
     auto tmp = result_odd;
     // FLOP estimate for complex multiply:
     flopEstimate += 6 * tmp.real.numElements();
@@ -244,16 +245,16 @@ namespace complex {
     // Elementwise add for the twiddles (butterflies):
     poplar::Tensor lowerRe =
       popops::add(graph, result_even.real, tmp.real,
-                  prog, debugPrefix + "/twiddle_lower_real");
+                  prog, twiddlePrefix + "/lower_real");
     poplar::Tensor lowerIm =
       popops::add(graph, result_even.imag, tmp.imag,
-                  prog, debugPrefix + "/twiddle_lower_imag");
+                  prog, twiddlePrefix + "/lower_imag");
     poplar::Tensor upperRe =
       popops::sub(graph, result_even.real, tmp.real,
-                  prog, debugPrefix + "/twiddle_upper_real");
+                  prog, twiddlePrefix + "/upper_real");
     poplar::Tensor upperIm =
       popops::sub(graph, result_even.imag, tmp.imag,
-                  prog, debugPrefix + "/twiddle_upper_imag");
+                  prog, twiddlePrefix + "/upper_imag");
 
     // FLOP estimate for element-wise ops:
     flopEstimate += 4 * tmp.real.numElements();
@@ -262,6 +263,71 @@ namespace complex {
       poplar::concat(lowerRe, upperRe, 1),
       poplar::concat(lowerIm, upperIm, 1)
     );
+  }
+
+  ComplexTensor FFTBuilder::fft2d(ComplexTensor input, std::size_t radix, std::size_t serialisationFactor) {
+
+    if (input.rank() != 2) {
+      throw std::runtime_error("fft2d only supports inputs with rank 2 and batch-size 1 (i.e. a single matrix).");
+    }
+
+    if (input.dim(0) != input.dim(1)) {
+      throw std::runtime_error("fft2d only supports square matrices as input.");
+    }
+
+    if (input.dim(0) % serialisationFactor) {
+      std::stringstream ss;
+      ss << "The number of rows in the input (" << input.dim(0)
+         << ") must be divisible by the serialisation factor (" << serialisationFactor << ")";
+      ipu_utils::logger()->error(ss.str());
+      throw std::runtime_error(ss.str());
+    }
+
+    // Work out the size of each slice determined by the serialisationFactor:
+    std::size_t rowsPerCall = input.dim(0) / serialisationFactor;
+
+    // Make a graph function that can be called to process each slice of the input with a 1D-FFT:
+    auto functionInput = ComplexTensor(graph, input.elementType(), {rowsPerCall, input.dim(1)}, "fft2d_fn_input");
+    functionInput.mapLinearly(graph);
+    auto functionOutput = fft1d(functionInput, radix);
+    auto fft1dFunc = graph.addFunction(prog);
+    ipu_utils::logger()->info("FFT-2D input shape: {}", input.shape());
+    ipu_utils::logger()->debug("Serialised FFT input shape: {} serialisation-factor: {}", functionInput.shape(), serialisationFactor);
+    ipu_utils::logger()->debug("Serialised FFT FLOPS per call: {}", flopEstimate);
+
+    // FLOP estimates have been accumulated by the fft1d: account for the number of calls:
+    flopEstimate *= 2 * serialisationFactor;
+
+    // 2D FFT is done in-place in two passes:
+
+    // First pass 1D FFT for each row. Rows are processed in-place
+    // in serialisationFactor chunks:
+    for (auto i = 0u; i < serialisationFactor; ++i) {
+      // Copy slices into the input:
+      auto slicedRows = input.slice(i * rowsPerCall, (i + 1) * rowsPerCall, 0);
+
+      prog.add(copy(slicedRows, functionInput));
+      prog.add(poplar::program::Call(fft1dFunc));
+
+      // Copy result back to original slice:
+      prog.add(copy(functionOutput, slicedRows));
+      prog.add(poplar::program::Copy(functionOutput.imag, functionInput.imag));
+    }
+
+    // Now repeat applying 1D-FFT to rows:
+    input = input.transpose();
+    for (auto i = 0u; i < serialisationFactor; ++i) {
+      // Copy slices into the input:
+      auto slicedRows = input.slice(i * rowsPerCall, (i + 1) * rowsPerCall, 0);
+      prog.add(copy(slicedRows, functionInput));
+      prog.add(poplar::program::Call(fft1dFunc));
+
+      // Copy result back to original slice:
+      prog.add(copy(functionOutput, slicedRows));
+      prog.add(poplar::program::Copy(functionOutput.imag, functionInput.imag));
+    }
+
+    return input.transpose();
   }
 
   ComplexTensor FFTBuilder::inverseFourierMatrices(

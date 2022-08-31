@@ -29,7 +29,8 @@
 struct FourierTransform :
   public ipu_utils::BuilderInterface, public ToolInterface
 {
-  FourierTransform() : size(0), batchSize(0), radixSize(0) {}
+  FourierTransform() : size(0), batchSize(0), radixSize(0),
+                       serialisation(0), availableMemoryProportion(-1.f) {}
   virtual ~FourierTransform() {}
 
   void build(poplar::Graph& graph, const poplar::Target&) override {
@@ -44,7 +45,7 @@ struct FourierTransform :
 
     ipu_utils::logger()->info("Building FFT of input-size {} batch-size {} radix-size {}", size, batchSize, radixSize);
     builder.setAvailableMemoryProportion(availableMemoryProportion);
-    auto output = builder.fft1d(input, radixSize);
+    auto output = builder.fft2d(input, radixSize, serialisation);
     ipu_utils::logger()->info("FFT estimated FLOP count: {}", builder.getFlopEstimate());
 
     auto cycleCount = poplar::cycleCount(graph, fftSeq, 0, poplar::SyncType::INTERNAL);
@@ -61,13 +62,13 @@ struct FourierTransform :
 
   void execute(poplar::Engine& engine, const poplar::Device& device) override {
     // Create input values and write to the device:
-    auto step = 1.f / size;
+    auto x = 0u;
     for (auto b = 0u; b < batchSize; ++b) {
       // Each item in a batch is identical:
       for (auto i = 0u; i < size; ++i) {
-        auto x = i * step;
-        realData[b*size + i] = x * x;
-        imagData[b*size + i] = (1 - x) * x;
+        x += 1;
+        realData[b*size + i] = x;
+        imagData[b*size + i] = x;
       }
     }
 
@@ -107,6 +108,8 @@ struct FourierTransform :
     ("radix-size", po::value<std::size_t>(&radixSize)->default_value(0),
      "Choose radix size (base case size at which DFT matrix-multiply is performed). The default (0) automatically "
      "sets the radix to half the input size (i.e. no FFT recursion).")
+    ("serialisation-factor", po::value<std::size_t>(&serialisation)->default_value(1),
+     "For FFT-2D controls how many chunks the input is split into. Higher values trade performance for reduced memory use.")
     ("available-memory-proportion", po::value<float>(&availableMemoryProportion)->default_value(-1.f),
      "Set the memory proportion available for the inner DFT matrix multiplies. Default: use the Poplar default.");
   }
@@ -129,6 +132,7 @@ private:
   std::size_t size;
   std::size_t batchSize;
   std::size_t radixSize;
+  std::size_t serialisation;
   float availableMemoryProportion;
   std::vector<float> realData;
   std::vector<float> imagData;

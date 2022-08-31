@@ -6,11 +6,11 @@ RUN_DIR="profiles"
 mkdir -p $RUN_DIR
 CSV_FILE=${RUN_DIR}/"csv_results.txt"
 
-for SIZE in 4096 8192
+for SIZE in 64 128 256 512 1024 2048 4096 8192
 do
-  for BS in 1 128 512
+  for RADIX in 16 32 64 128 256 512 1024 2048
   do
-    for RADIX in 32 64 128 256 512 1024 2048
+    for BS in 1 2 4 8 16 32 64 128 512 1024
     do
       RUN_NAME="fft_1d_${SIZE}_bs${BS}_radix${RADIX}"
       export POPLAR_ENGINE_OPTIONS="{\"autoReport.all\":\"true\", \"autoReport.directory\":\"${RUN_DIR}/${RUN_NAME}\", \"profiler.includeFlopEstimates\":\"true\"}"
