@@ -266,7 +266,7 @@ namespace complex {
 
   ComplexTensor FFTBuilder::inverseFourierMatrices(
       std::size_t length, poplar::Type elemType) {
-    const float twoPi_over_length = (2.0 / length) * 3.14159265358979323846;
+    const double twoPi_over_length = (2.0L / length) * 3.141592653589793238462643383279502884L;
     std::vector<float> real(length * length, 0.f);
     std::vector<float> imag(length * length, 0.f);
     for (std::size_t row = 0; row < length; ++row) {
@@ -292,7 +292,7 @@ namespace complex {
       throw std::logic_error("FFT size must be a multiple of 2.");
     }
     auto baseSize = N / 2;
-    const float s = ((2.0 * (N-1)) / N) * 3.14159265358979323846;
+    const double s = ((2.0L * (N-1)) / N) * 3.141592653589793238462643383279502884L;
     std::vector<float> real(baseSize, 0.f);
     std::vector<float> imag(baseSize, 0.f);
 
