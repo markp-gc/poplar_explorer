@@ -265,6 +265,19 @@ namespace complex {
     );
   }
 
+  FFTBuilder::FunctionClosure
+  FFTBuilder::fft1dMakeGraphFunction(poplar::program::Program& prog,
+                                     std::size_t radix,
+                                     poplar::Type elementType,
+                                     const std::vector<std::size_t>& shape) {
+    auto functionInput = ComplexTensor(graph, elementType,
+                                       shape, debugPrefix + "/fft1d_fn_input");
+    functionInput.mapLinearly(graph);
+    auto functionOutput = fft1d(functionInput, radix);
+    auto fft1dFunc = graph.addFunction(prog);
+    return FunctionClosure{fft1dFunc, functionInput, functionOutput};
+  }
+
   ComplexTensor FFTBuilder::fft2d(ComplexTensor input, std::size_t radix, std::size_t serialisationFactor) {
 
     if (input.rank() != 2) {
@@ -287,12 +300,9 @@ namespace complex {
     std::size_t rowsPerCall = input.dim(0) / serialisationFactor;
 
     // Make a graph function that can be called to process each slice of the input with a 1D-FFT:
-    auto functionInput = ComplexTensor(graph, input.elementType(), {rowsPerCall, input.dim(1)}, "fft2d_fn_input");
-    functionInput.mapLinearly(graph);
-    auto functionOutput = fft1d(functionInput, radix);
-    auto fft1dFunc = graph.addFunction(prog);
+    auto fft1dFunc = fft1dMakeGraphFunction(prog, radix, input.elementType(), {rowsPerCall, input.dim(1)});
     ipu_utils::logger()->info("FFT-2D input shape: {}", input.shape());
-    ipu_utils::logger()->debug("Serialised FFT input shape: {} serialisation-factor: {}", functionInput.shape(), serialisationFactor);
+    ipu_utils::logger()->debug("Serialised FFT input shape: {} serialisation-factor: {}", fft1dFunc.input.shape(), serialisationFactor);
     ipu_utils::logger()->debug("Serialised FFT FLOPS per call: {}", flopEstimate);
 
     // FLOP estimates have been accumulated by the fft1d: account for the number of calls:
@@ -300,33 +310,24 @@ namespace complex {
 
     // 2D FFT is done in-place in two passes:
 
-    // First pass 1D FFT for each row. Rows are processed in-place
-    // in serialisationFactor chunks:
+    // First pass 1D FFT for each row. Rows are processed
+    // in-place in serialisationFactor chunks:
     for (auto i = 0u; i < serialisationFactor; ++i) {
-      // Copy slices into the input:
+      // Work on slices of the input:
       auto slicedRows = input.slice(i * rowsPerCall, (i + 1) * rowsPerCall, 0);
-
-      prog.add(copy(slicedRows, functionInput));
-      prog.add(poplar::program::Call(fft1dFunc));
-
-      // Copy result back to original slice:
-      prog.add(copy(functionOutput, slicedRows));
-      prog.add(poplar::program::Copy(functionOutput.imag, functionInput.imag));
+      prog.add(fft1dFunc(slicedRows, slicedRows));
     }
 
-    // Now repeat applying 1D-FFT to rows:
+    // Now repeat applying 1D-FFT to columns:
     input = input.transpose();
     for (auto i = 0u; i < serialisationFactor; ++i) {
-      // Copy slices into the input:
+      // Work on slices of the input:
       auto slicedRows = input.slice(i * rowsPerCall, (i + 1) * rowsPerCall, 0);
-      prog.add(copy(slicedRows, functionInput));
-      prog.add(poplar::program::Call(fft1dFunc));
-
-      // Copy result back to original slice:
-      prog.add(copy(functionOutput, slicedRows));
-      prog.add(poplar::program::Copy(functionOutput.imag, functionInput.imag));
+      prog.add(fft1dFunc(slicedRows, slicedRows));
     }
 
+    // We have calculated the result in-place so we must
+    // transpose back before returning:
     return input.transpose();
   }
 

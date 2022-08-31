@@ -142,6 +142,25 @@ private:
   std::pair<ComplexTensor, ComplexTensor> splitEvenOdd(ComplexTensor input);
   ComplexTensor inverseFourierMatrices(std::size_t length, poplar::Type elemType);
   ComplexTensor twiddleCoefficients(std::size_t N, poplar::Type elemType);
+
+  struct FunctionClosure {
+    poplar::Function function;
+    ComplexTensor input;
+    ComplexTensor output;
+
+    poplar::program::Program operator () (ComplexTensor& argIn, ComplexTensor& argOut) {
+      poplar::program::Sequence seq;
+      seq.add(copy(argIn, input));
+      seq.add(poplar::program::Call(function));
+      seq.add(copy(output, argOut));
+      return seq;
+    }
+  };
+
+  FunctionClosure fft1dMakeGraphFunction(poplar::program::Program& prog,
+                                         std::size_t radix,
+                                         poplar::Type elementType,
+                                         const std::vector<std::size_t>& shape);
 };
 
 } // namespace complex

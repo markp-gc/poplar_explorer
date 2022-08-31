@@ -90,7 +90,7 @@ struct FourierTransform :
     uint64_t cycleCount = 0u;
     ipu_utils::readScalar(engine, "cycle_count", cycleCount);
     ipu_utils::logger()->info("FFT completed in {} cycles.", cycleCount);
-    if (size < 32u && batchSize < 5u) {
+    if (size <= 16u && batchSize <= 8u) {
       for (auto b = 0u; b < batchSize; ++b) {
         ipu_utils::logger()->info("1D FFT result[{}] Re:\n{}\n", b, slice(realData, b * size, (b + 1) * size));
         ipu_utils::logger()->info("1D FFT result[{}] Im:\n{}\n", b, slice(imagData, b * size, (b + 1) * size));
