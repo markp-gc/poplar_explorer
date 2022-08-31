@@ -43,6 +43,7 @@ struct FourierTransform :
     input.mapLinearly(graph);
 
     ipu_utils::logger()->info("Building FFT of input-size {} batch-size {} radix-size {}", size, batchSize, radixSize);
+    builder.setAvailableMemoryProportion(availableMemoryProportion);
     auto output = builder.fft1d(input, radixSize);
     ipu_utils::logger()->info("FFT estimated FLOP count: {}", builder.getFlopEstimate());
 
@@ -105,7 +106,9 @@ struct FourierTransform :
      "Batch size for 1D FFT (i.e. number of input vectors).")
     ("radix-size", po::value<std::size_t>(&radixSize)->default_value(0),
      "Choose radix size (base case size at which DFT matrix-multiply is performed). The default (0) automatically "
-     "sets the radix to half the input size (i.e. no FFT recursion).");
+     "sets the radix to half the input size (i.e. no FFT recursion).")
+    ("available-memory-proportion", po::value<float>(&availableMemoryProportion)->default_value(-1.f),
+     "Set the memory proportion available for the inner DFT matrix multiplies. Default: use the Poplar default.");
   }
 
   void init(const boost::program_options::variables_map& args) override {
@@ -126,6 +129,7 @@ private:
   std::size_t size;
   std::size_t batchSize;
   std::size_t radixSize;
+  float availableMemoryProportion;
   std::vector<float> realData;
   std::vector<float> imagData;
 };

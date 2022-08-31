@@ -129,12 +129,17 @@ namespace complex {
     graph.setTileMapping(matrix.real, graph.getTileMapping(matmulMapping));
     graph.setTileMapping(matrix.imag, graph.getTileMapping(matmulMapping));
 
+    poplar::OptionFlags matmulOptions;
+    if (availableMemoryProportion > 0.f) {
+      matmulOptions.set("availableMemoryProportion", std::to_string(availableMemoryProportion));
+    }
+
     poplar::Tensor partial =
       poplin::matMul(graph, matrix.real, realBatch, prog,
-                     elemType, debugStr + "/real_matmul");
+                     elemType, debugStr + "/real_matmul", matmulOptions);
 
     poplin::matMulAcc(graph, partial, 1.f, matrix.imag, imagBatch, prog,
-                      debugStr + "/imag_matmul");
+                      debugStr + "/imag_matmul", matmulOptions);
 
     // FLOP estimates for matrix multiplies:
     flopEstimate += 2 * matrix.dim(0) * matrix.dim(1) * realBatch.dim(1) * 2;
