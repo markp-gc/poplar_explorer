@@ -72,7 +72,7 @@ if __name__ == "__main__":
     if args.csv_out:
       print("Writing CSV headers")
       with open(args.csv_out, "w") as f:
-        f.write(f"Input-size,Batch-size,Radix-size,DFT Batch-size,Cycles,FLOPS Estimate,FLOPS/Cycle,GFLOPS/sec,Memory Including Gaps (bytes),Peak Live Memory Step, Peak Live Memory (bytes)\n")
+        f.write(f"Input-size,Batch-size,Radix-size,DFT Batch-size,Cycles,FLOPS Estimate,FLOPS/Cycle,GFLOPS/sec,Memory Including Gaps (bytes)\n")
       exit()
     else:
       raise RuntimeError("Can't write headers: no output file specified.")
@@ -82,9 +82,6 @@ if __name__ == "__main__":
 
   total_memory = sum(tile.memory.total.includingGaps for tile in report.compilation.tiles)
   print(f"Total memory use (bytes): {total_memory}")
-
-  peak_name, peak_live_memory = getPeakLivenessStep(report)
-  print(f"Program step consuming peak memory: {peak_name} {peak_live_memory}")
 
   size, bs, radix, cycles, flops, dft_batch_size = getFFTInfoFromLog(args.log_file)
   flops_per_cycle = flops/cycles if flops else None
@@ -101,4 +98,4 @@ if __name__ == "__main__":
   # Collate everything into one line of CSV and append to file if specififed:
   if args.csv_out:
     with open(args.csv_out, "a") as f:
-      f.write(f"{size},{bs},{radix},{dft_batch_size},{cycles},{flops},{flops_per_cycle},{gflops_per_second},{total_memory},{peak_name},{peak_live_memory}\n")
+      f.write(f"{size},{bs},{radix},{dft_batch_size},{cycles},{flops},{flops_per_cycle},{gflops_per_second},{total_memory}\n")

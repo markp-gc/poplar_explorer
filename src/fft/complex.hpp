@@ -105,29 +105,23 @@ public:
   FFTBuilder(poplar::Graph &graph,
              poplar::program::Sequence &sequence,
              const std::string debugName)
-    : graph(graph), prog(sequence), debugPrefix(debugName),
-      availableMemoryProportion(-1.f), flopEstimate(0) {}
-
-  /// Set the proportion of memory available for the inner DFT matrix-multiplies.
-  void setAvailableMemoryProportion(float proportion) { availableMemoryProportion = proportion; }
+    : graph(graph), prog(sequence), debugPrefix(debugName), flopEstimate(0) {}
 
   /// Build the compute graph that applies FFT to the given complex vector.
   /// The program will be appended to the sequence specified in construction
   /// of this object.
   ComplexTensor fft1d(ComplexTensor input, std::size_t radix = 0);
-
+  poplar::program::Sequence& getProgram() { return prog; }
   std::size_t getFlopEstimate() const { return flopEstimate; }
 
 private:
-  float availableMemoryProportion;
-  std::size_t flopEstimate;
-
   // Utility functions used in construction of the FFT graph program.
   ComplexTensor multiplyMatrixByVectorBatch(const ComplexTensor matrix, ComplexTensor vectors);
   ComplexTensor dft1d(ComplexTensor fourierMatrix, ComplexTensor even, ComplexTensor odd);
   std::pair<ComplexTensor, ComplexTensor> splitEvenOdd(ComplexTensor input);
   ComplexTensor inverseFourierMatrices(std::size_t length, poplar::Type elemType);
   ComplexTensor twiddleCoefficients(std::size_t N, poplar::Type elemType);
+  std::size_t flopEstimate;
 };
 
 } // namespace complex
