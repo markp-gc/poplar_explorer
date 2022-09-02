@@ -55,13 +55,10 @@ namespace complex {
     namespace pe = popops::expr;
     auto complexMulExprRe = pe::Sub(pe::Mul(pe::_1, pe::_2), pe::Mul(pe::_3, pe::_4));
     auto complexMulExprIm = pe::Add(pe::Mul(pe::_1, pe::_2), pe::Mul(pe::_3, pe::_4));
-
-    // Can only do the second expression in-place:
-    auto tmpReal = popops::map(graph, complexMulExprRe, {real, v.real, imag, v.imag},
-                               prog, debugPrefix + "/complex_mul_re");
+    popops::mapInPlace(graph, complexMulExprRe, {real, v.real, imag, v.imag},
+                       prog, debugPrefix + "/complex_mul_re");
     popops::mapInPlace(graph, complexMulExprIm, {imag, v.real, real, v.imag},
                        prog, debugPrefix + "/complex_mul_im");
-    real = tmpReal;
   }
 
   ComplexTensor multiply(poplar::Graph& graph,
@@ -129,17 +126,12 @@ namespace complex {
     graph.setTileMapping(matrix.real, graph.getTileMapping(matmulMapping));
     graph.setTileMapping(matrix.imag, graph.getTileMapping(matmulMapping));
 
-    poplar::OptionFlags matmulOptions;
-    if (availableMemoryProportion > 0.f) {
-      matmulOptions.set("availableMemoryProportion", std::to_string(availableMemoryProportion));
-    }
-
     poplar::Tensor partial =
       poplin::matMul(graph, matrix.real, realBatch, prog,
-                     elemType, debugStr + "/real_matmul", matmulOptions);
+                     elemType, debugStr + "/real_matmul");
 
     poplin::matMulAcc(graph, partial, 1.f, matrix.imag, imagBatch, prog,
-                      debugStr + "/imag_matmul", matmulOptions);
+                      debugStr + "/imag_matmul");
 
     // FLOP estimates for matrix multiplies:
     flopEstimate += 2 * matrix.dim(0) * matrix.dim(1) * realBatch.dim(1) * 2;
@@ -219,25 +211,21 @@ namespace complex {
     auto result_odd = fftSubResult.transpose().slice(batchSize, 2*batchSize, 0);
     ipu_utils::logger()->debug("Twiddle coeff shape: {} and multiply shape: {}", w.shape(), result_odd.shape());
 
-    // Copy the DFT results to a linear layout if there are enough
-    // elements for this to make sense (this heuristic is very approximate):
-    if (result_even.real.numElements() > graph.getTarget().getNumTiles()) {
-      ipu_utils::logger()->debug("Re-mapping DFT result ({} > {}).",
-                                 result_even.real.numElements(), graph.getTarget().getNumTiles());
-      auto result_even_remapped = ComplexTensor(graph, result_even.elementType(), result_even.shape(), "dft_even_remapped");
-      result_even_remapped.mapLinearly(graph);
-      prog.add(copy(result_even, result_even_remapped));
-      result_even = result_even_remapped;
+    // Copy the DFT results to a linear layout:
+    auto result_even_remapped = ComplexTensor(graph, result_even.elementType(), result_even.shape(), "dft_even_remapped");
+    result_even_remapped.mapLinearly(graph);
+    prog.add(copy(result_even, result_even_remapped));
+    result_even = result_even_remapped;
 
-      auto result_odd_remapped = ComplexTensor(graph, result_even.elementType(), result_even.shape(), "dft_even_remapped");
-      result_odd_remapped.mapLinearly(graph);
-      prog.add(copy(result_odd, result_odd_remapped));
-      result_odd = result_odd_remapped;
-    }
+    auto result_odd_remapped = ComplexTensor(graph, result_even.elementType(), result_even.shape(), "dft_even_remapped");
+    result_odd_remapped.mapLinearly(graph);
+    prog.add(copy(result_odd, result_odd_remapped));
+    result_odd = result_odd_remapped;
 
     // Element-wise multiply odd components by coefficients:
-    result_odd.multiplyInPlace(graph, w, prog, "twiddle");
-    auto tmp = result_odd;
+    auto tmp = multiply(graph, w, result_odd, prog, "twiddle");
+    //result_odd.multiplyInPlace(graph, w, prog, "twiddle");
+    //auto tmp = result_odd;
     // FLOP estimate for complex multiply:
     flopEstimate += 6 * tmp.real.numElements();
 
@@ -266,7 +254,7 @@ namespace complex {
 
   ComplexTensor FFTBuilder::inverseFourierMatrices(
       std::size_t length, poplar::Type elemType) {
-    const double twoPi_over_length = (2.0L / length) * 3.141592653589793238462643383279502884L;
+    const float twoPi_over_length = (2.0 / length) * 3.14159265358979323846;
     std::vector<float> real(length * length, 0.f);
     std::vector<float> imag(length * length, 0.f);
     for (std::size_t row = 0; row < length; ++row) {
@@ -292,7 +280,7 @@ namespace complex {
       throw std::logic_error("FFT size must be a multiple of 2.");
     }
     auto baseSize = N / 2;
-    const double s = ((2.0L * (N-1)) / N) * 3.141592653589793238462643383279502884L;
+    const float s = ((2.0 * (N-1)) / N) * 3.14159265358979323846;
     std::vector<float> real(baseSize, 0.f);
     std::vector<float> imag(baseSize, 0.f);
 
