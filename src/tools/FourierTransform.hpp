@@ -16,7 +16,7 @@
 #include <poputil/TileMapping.hpp>
 #include <poputil/Util.hpp>
 
-#include "../fft/complex.hpp"
+#include "../fft/FFTBuilder.hpp"
 #include "../fft/utils.hpp"
 
 #include <boost/program_options.hpp>
@@ -38,7 +38,7 @@ struct FourierTransform :
     poplin::addCodelets(graph);
     poplar::program::Sequence prog;
 
-    complex::FFTBuilder builder(graph, "fft_builder");
+    FFTBuilder builder(graph, "fft_builder");
     auto input = complex::ComplexTensor(graph, poplar::FLOAT, {batchSize, size}, "a");
     input.mapLinearly(graph);
 
