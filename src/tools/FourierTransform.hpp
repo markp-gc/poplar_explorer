@@ -41,11 +41,17 @@ struct FourierTransform :
     FFTBuilder builder(graph, "fft_builder");
     auto input = complex::ComplexTensor(graph, poplar::FLOAT, {batchSize, size}, "a");
     input.mapLinearly(graph);
-
-    ipu_utils::logger()->info("Building FFT of input-size {} batch-size {} radix-size {}", size, batchSize, radixSize);
     builder.setAvailableMemoryProportion(availableMemoryProportion);
     poplar::program::Sequence fftSeq;
-    auto output = builder.fft2d(fftSeq, input, radixSize, serialisation);
+    complex::ComplexTensor output;
+    if (fftType == "1d") {
+      ipu_utils::logger()->info("Building 1D-FFT of input-size {} batch-size {} radix-size {}", size, batchSize, radixSize);
+      output = builder.fft1d(fftSeq, input, radixSize);
+    } else {
+      ipu_utils::logger()->info("Building 2D-FFT of input-size {} x {} radix-size {} (batch-size 1)", size, batchSize, radixSize);
+      output = builder.fft2d(fftSeq, input, radixSize, serialisation);
+    }
+
     ipu_utils::logger()->info("FFT estimated FLOP count: {}", builder.getFlopEstimate());
 
     auto cycleCount = poplar::cycleCount(graph, fftSeq, 0, poplar::SyncType::INTERNAL);
@@ -101,6 +107,8 @@ struct FourierTransform :
   void addToolOptions(boost::program_options::options_description& desc) override {
     namespace po = boost::program_options;
     desc.add_options()
+    ("fft-type", po::value<std::string>(&fftType)->default_value("1d"),
+     "Dimensionality of the FFT to compute 1D treats input as a batch of 1D vectors. 2D treats input as a 2D field of batch-size 1.")
     ("fft-size", po::value<std::size_t>(&size)->default_value(1024),
      "Dimension of input vector to 1D FFT.")
     ("batch-size", po::value<std::size_t>(&batchSize)->default_value(1),
@@ -115,6 +123,10 @@ struct FourierTransform :
   }
 
   void init(const boost::program_options::variables_map& args) override {
+    if (fftType != "1d" && fftType != "2d" ) {
+      throw std::runtime_error("Option 'fftType' must be either '1d' or '2d'.");
+    }
+
     if (size % 2) {
       throw std::logic_error("FFT input size must be a multiple of 2.");
     }
@@ -129,6 +141,7 @@ struct FourierTransform :
   }
 
 private:
+  std::string fftType;
   std::size_t size;
   std::size_t batchSize;
   std::size_t radixSize;

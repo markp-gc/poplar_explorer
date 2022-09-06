@@ -18,10 +18,10 @@ def getPeakLivenessStep(report):
 
 # Parse the log of the `multi-tool FourierTransform` program:
 def getFFTInfoFromLog(log_file):
-  sizes_regx = re.compile("Building FFT of input-size ([-+]?[0-9]+) batch-size ([-+]?[0-9]+) radix-size ([-+]?[0-9]+)")
-  cycles_regx = re.compile("FFT completed in ([-+]?[0-9]+) cycles.")
-  flop_regx = re.compile("estimated FLOP count: ([-+]?[0-9]+)")
-  matmul_regx = re.compile("DFT Re-Matmul shape: [-+]?[0-9]+ [-+]?[0-9]+  x [-+]?[0-9]+ ([-+]?[0-9]+)")
+  sizes_regx = re.compile(r"Building ([0-9])D-FFT of input-size ([-+]?[0-9]+) (?:\bbatch-size\b|x) ([-+]?[0-9]+) radix-size ([-+]?[0-9]+)")
+  cycles_regx = re.compile(r"FFT completed in ([-+]?[0-9]+) cycles.")
+  flop_regx = re.compile(r"estimated FLOP count: ([-+]?[0-9]+)")
+  matmul_regx = re.compile(r"DFT Re-Matmul shape: [-+]?[0-9]+ [-+]?[0-9]+  x [-+]?[0-9]+ ([-+]?[0-9]+)")
   input_size = None
   batch_size = None
   radix_size = None
@@ -35,9 +35,10 @@ def getFFTInfoFromLog(log_file):
         match3 = flop_regx.search(line)
         match4 = matmul_regx.search(line)
         if match1:
-          input_size = match1.group(1)
-          batch_size = match1.group(2)
-          radix_size = match1.group(3)
+          fft_type = match1.group(1)
+          input_size = match1.group(2)
+          batch_size = match1.group(3)
+          radix_size = match1.group(4)
         if match2:
           fft_cycles = match2.group(1)
         if match3:
@@ -50,8 +51,8 @@ def getFFTInfoFromLog(log_file):
 
   if fft_cycles is None or flops is None:
     # Was probably out of memory or other error in this case so still return the sizes:
-    return int(input_size), int(batch_size), int(radix_size), None, None, int(dft_batch_size)
-  return int(input_size), int(batch_size), int(radix_size), int(fft_cycles), int(flops), int(dft_batch_size)
+    return int(fft_type), int(input_size), int(batch_size), int(radix_size), None, None, int(dft_batch_size)
+  return int(fft_type), int(input_size), int(batch_size), int(radix_size), int(fft_cycles), int(flops), int(dft_batch_size)
 
 
 if __name__ == "__main__":
@@ -72,7 +73,7 @@ if __name__ == "__main__":
     if args.csv_out:
       print("Writing CSV headers")
       with open(args.csv_out, "w") as f:
-        f.write(f"Input-size,Batch-size,Radix-size,DFT Batch-size,Cycles,FLOPS Estimate,FLOPS/Cycle,GFLOPS/sec,Memory Including Gaps (bytes),Peak Live Memory Step, Peak Live Memory (bytes)\n")
+        f.write(f"FFT-Type, Input-size,Batch-size,Radix-size,DFT Batch-size,Cycles,FLOPS Estimate,FLOPS/Cycle,GFLOPS/sec,Memory Including Gaps (bytes),Peak Live Memory Step, Peak Live Memory (bytes)\n")
       exit()
     else:
       raise RuntimeError("Can't write headers: no output file specified.")
@@ -86,9 +87,10 @@ if __name__ == "__main__":
   peak_name, peak_live_memory = getPeakLivenessStep(report)
   print(f"Program step consuming peak memory: {peak_name} {peak_live_memory}")
 
-  size, bs, radix, cycles, flops, dft_batch_size = getFFTInfoFromLog(args.log_file)
+  fft_type, size, bs, radix, cycles, flops, dft_batch_size = getFFTInfoFromLog(args.log_file)
   flops_per_cycle = flops/cycles if flops else None
   gflops_per_second = flops_per_cycle * args.clock_speed_ghz if flops_per_cycle else None
+  print(f"FFT type: {fft_type}D")
   print(f"Input size: {size}")
   print(f"Batch size: {bs}")
   print(f"Radix size: {radix}")
@@ -101,4 +103,4 @@ if __name__ == "__main__":
   # Collate everything into one line of CSV and append to file if specififed:
   if args.csv_out:
     with open(args.csv_out, "a") as f:
-      f.write(f"{size},{bs},{radix},{dft_batch_size},{cycles},{flops},{flops_per_cycle},{gflops_per_second},{total_memory},{peak_name},{peak_live_memory}\n")
+      f.write(f"{fft_type}D,{size},{bs},{radix},{dft_batch_size},{cycles},{flops},{flops_per_cycle},{gflops_per_second},{total_memory},{peak_name},{peak_live_memory}\n")

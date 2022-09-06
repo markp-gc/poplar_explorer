@@ -2,7 +2,8 @@
 
 # Copyright (c) 2022 Graphcore Ltd. All rights reserved.
 
-RUN_DIR="profiles"
+TYPE="1d"
+RUN_DIR="profiles_${TYPE}"
 mkdir -p $RUN_DIR
 CSV_FILE=${RUN_DIR}/"csv_results.txt"
 
@@ -16,7 +17,7 @@ do
       export POPLAR_ENGINE_OPTIONS="{\"autoReport.all\":\"true\", \"autoReport.directory\":\"${RUN_DIR}/${RUN_NAME}\", \"profiler.includeFlopEstimates\":\"true\"}"
       echo "Running size: ${SIZE} batch-size: ${BS} radix: ${RADIX}"
       mkdir -p ${RUN_DIR}/${RUN_NAME}
-      ./multi-tool FourierTransform --fft-size ${SIZE} --batch-size ${BS} --radix-size ${RADIX} > ${RUN_DIR}/${RUN_NAME}/run_log.txt &
+      ./multi-tool FourierTransform --fft-type ${TYPE} --fft-size ${SIZE} --batch-size ${BS} --radix-size ${RADIX} > ${RUN_DIR}/${RUN_NAME}/run_log.txt &
     done
     wait
   done
