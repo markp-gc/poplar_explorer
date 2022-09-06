@@ -93,6 +93,7 @@ namespace complex {
   }
 
   ComplexTensor FFTBuilder::multiplyMatrixByVectorBatch(
+      poplar::program::Sequence& fftSeq,
       const ComplexTensor matrix, ComplexTensor vectors) {
     // The intended use of this function is to do the matmuls for all the base FFT
     // radixes in two real matmuls by batching all the components and multiplying
@@ -109,7 +110,7 @@ namespace complex {
     auto elemType = vectors.real.elementType();
     auto numVectors = vectors.real.dim(1);
     auto debugStr = debugPrefix + "/complex_mul_mat_vec";
-    auto negIm = popops::neg(graph, vectors.imag, prog, debugStr);
+    auto negIm = popops::neg(graph, vectors.imag, fftSeq, debugStr);
 
     // Batch together all vectors that are multiplied
     // by the real part of the matrix:
@@ -135,10 +136,10 @@ namespace complex {
     graph.setTileMapping(matrix.imag, graph.getTileMapping(matmulMapping));
 
     poplar::Tensor partial =
-      poplin::matMul(graph, matrix.real, realBatch, prog,
+      poplin::matMul(graph, matrix.real, realBatch, fftSeq,
                      elemType, debugStr + "/real_matmul", matmulOptions);
 
-    poplin::matMulAcc(graph, partial, 1.f, matrix.imag, imagBatch, prog,
+    poplin::matMulAcc(graph, partial, 1.f, matrix.imag, imagBatch, fftSeq,
                       debugStr + "/imag_matmul", matmulOptions);
 
     // FLOP estimates for matrix multiplies:
@@ -147,15 +148,16 @@ namespace complex {
     return ComplexTensor(partial.slice(0, numVectors, 1), partial.slice(numVectors, 2 * numVectors, 1));
   }
 
-  ComplexTensor FFTBuilder::dft1d(ComplexTensor fourierMatrix,
-                      ComplexTensor even, ComplexTensor odd) {
+  ComplexTensor FFTBuilder::dft1d(poplar::program::Sequence& fftSeq,
+                                  ComplexTensor fourierMatrix,
+                                  ComplexTensor even, ComplexTensor odd) {
     // Combine the odd and even chunks into real and imaginary batches:
     auto real = hstack({even.real, odd.real});
     auto imag = hstack({even.imag, odd.imag});
-    return multiplyMatrixByVectorBatch(fourierMatrix, ComplexTensor(real, imag));
+    return multiplyMatrixByVectorBatch(fftSeq, fourierMatrix, ComplexTensor(real, imag));
   }
 
-  ComplexTensor FFTBuilder::fft1d(ComplexTensor input, std::size_t radix) {
+  ComplexTensor FFTBuilder::fft1d(poplar::program::Sequence& fftSeq, ComplexTensor input, std::size_t radix) {
     // Compute the 1D-FFT by decomposing the
     // Fourier matrix into an FFT of half the size
     // then compute final result using Cooley-Tukey
@@ -190,7 +192,7 @@ namespace complex {
       // can finish by applying the DFT matrices (ending any
       // recursion):
       auto invF = inverseFourierMatrices(splitPoint, elemType);
-      fftSubResult = dft1d(invF, even, odd);
+      fftSubResult = dft1d(fftSeq, invF, even, odd);
       ipu_utils::logger()->debug("DFT-1D result shape: {}", fftSubResult.shape());
     } else {
       // Recursively construct two FFTs of half the size
@@ -200,7 +202,7 @@ namespace complex {
         vstack({even.imag, odd.imag})
       );
       ipu_utils::logger()->debug("Recursive FFT-1D. Sub-problem input shape: {}", recursiveInput.shape());
-      auto fftResult = fft1d(recursiveInput, radix);
+      auto fftResult = fft1d(fftSeq, recursiveInput, radix);
       fftSubResult = fftResult.transpose();
       ipu_utils::logger()->debug("Sub-FFT-1D result shape: {}", fftResult.shape());
     }
@@ -226,18 +228,18 @@ namespace complex {
                                  result_even.real.numElements(), graph.getTarget().getNumTiles());
       auto result_even_remapped = ComplexTensor(graph, result_even.elementType(), result_even.shape(), "dft_even_remapped");
       result_even_remapped.mapLinearly(graph);
-      prog.add(copy(result_even, result_even_remapped));
+      fftSeq.add(copy(result_even, result_even_remapped));
       result_even = result_even_remapped;
 
       auto result_odd_remapped = ComplexTensor(graph, result_even.elementType(), result_even.shape(), "dft_even_remapped");
       result_odd_remapped.mapLinearly(graph);
-      prog.add(copy(result_odd, result_odd_remapped));
+      fftSeq.add(copy(result_odd, result_odd_remapped));
       result_odd = result_odd_remapped;
     }
 
     // Element-wise multiply odd components by coefficients:
     auto twiddlePrefix = debugPrefix + "/twiddle";
-    result_odd.multiplyInPlace(graph, w, prog, twiddlePrefix);
+    result_odd.multiplyInPlace(graph, w, fftSeq, twiddlePrefix);
     auto tmp = result_odd;
     // FLOP estimate for complex multiply:
     flopEstimate += 6 * tmp.real.numElements();
@@ -245,16 +247,16 @@ namespace complex {
     // Elementwise add for the twiddles (butterflies):
     poplar::Tensor lowerRe =
       popops::add(graph, result_even.real, tmp.real,
-                  prog, twiddlePrefix + "/lower_real");
+                  fftSeq, twiddlePrefix + "/lower_real");
     poplar::Tensor lowerIm =
       popops::add(graph, result_even.imag, tmp.imag,
-                  prog, twiddlePrefix + "/lower_imag");
+                  fftSeq, twiddlePrefix + "/lower_imag");
     poplar::Tensor upperRe =
       popops::sub(graph, result_even.real, tmp.real,
-                  prog, twiddlePrefix + "/upper_real");
+                  fftSeq, twiddlePrefix + "/upper_real");
     poplar::Tensor upperIm =
       popops::sub(graph, result_even.imag, tmp.imag,
-                  prog, twiddlePrefix + "/upper_imag");
+                  fftSeq, twiddlePrefix + "/upper_imag");
 
     // FLOP estimate for element-wise ops:
     flopEstimate += 4 * tmp.real.numElements();
@@ -265,20 +267,29 @@ namespace complex {
     );
   }
 
+  poplar::program::Program
+  FFTBuilder::FunctionClosure::operator () (ComplexTensor& argIn,ComplexTensor& argOut) {
+    poplar::program::Sequence seq;
+    seq.add(copy(argIn, input));
+    seq.add(poplar::program::Call(function));
+    seq.add(copy(output, argOut));
+    return seq;
+  }
+
   FFTBuilder::FunctionClosure
-  FFTBuilder::fft1dMakeGraphFunction(poplar::program::Program& prog,
-                                     std::size_t radix,
+  FFTBuilder::fft1dMakeGraphFunction(std::size_t radix,
                                      poplar::Type elementType,
                                      const std::vector<std::size_t>& shape) {
+    poplar::program::Sequence fft1dSeq;
     auto functionInput = ComplexTensor(graph, elementType,
                                        shape, debugPrefix + "/fft1d_fn_input");
     functionInput.mapLinearly(graph);
-    auto functionOutput = fft1d(functionInput, radix);
-    auto fft1dFunc = graph.addFunction(prog);
+    auto functionOutput = fft1d(fft1dSeq, functionInput, radix);
+    auto fft1dFunc = graph.addFunction(fft1dSeq);
     return FunctionClosure{fft1dFunc, functionInput, functionOutput};
   }
 
-  ComplexTensor FFTBuilder::fft2d(ComplexTensor input, std::size_t radix, std::size_t serialisationFactor) {
+  ComplexTensor FFTBuilder::fft2d(poplar::program::Sequence& prog, ComplexTensor input, std::size_t radix, std::size_t serialisationFactor) {
 
     if (input.rank() != 2) {
       throw std::runtime_error("fft2d only supports inputs with rank 2 and batch-size 1 (i.e. a single matrix).");
@@ -300,7 +311,7 @@ namespace complex {
     std::size_t rowsPerCall = input.dim(0) / serialisationFactor;
 
     // Make a graph function that can be called to process each slice of the input with a 1D-FFT:
-    auto fft1dFunc = fft1dMakeGraphFunction(prog, radix, input.elementType(), {rowsPerCall, input.dim(1)});
+    auto fft1dFunc = fft1dMakeGraphFunction(radix, input.elementType(), {rowsPerCall, input.dim(1)});
     ipu_utils::logger()->info("FFT-2D input shape: {}", input.shape());
     ipu_utils::logger()->debug("Serialised FFT input shape: {} serialisation-factor: {}", fft1dFunc.input.shape(), serialisationFactor);
     ipu_utils::logger()->debug("Serialised FFT FLOPS per call: {}", flopEstimate);
@@ -313,7 +324,7 @@ namespace complex {
     // First pass 1D FFT for each row. Rows are processed
     // in-place in serialisationFactor chunks:
     for (auto i = 0u; i < serialisationFactor; ++i) {
-      // Work on slices of the input:
+      // Work on slices of the input, result slice overwrites input slice:
       auto slicedRows = input.slice(i * rowsPerCall, (i + 1) * rowsPerCall, 0);
       prog.add(fft1dFunc(slicedRows, slicedRows));
     }
@@ -321,7 +332,7 @@ namespace complex {
     // Now repeat applying 1D-FFT to columns:
     input = input.transpose();
     for (auto i = 0u; i < serialisationFactor; ++i) {
-      // Work on slices of the input:
+      // Work on slices of the input, result slice overwrites input slice:
       auto slicedRows = input.slice(i * rowsPerCall, (i + 1) * rowsPerCall, 0);
       prog.add(fft1dFunc(slicedRows, slicedRows));
     }

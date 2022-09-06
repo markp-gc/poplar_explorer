@@ -95,17 +95,14 @@ poplar::program::Sequence copy(const ComplexTensor& src, const ComplexTensor& ds
 /// Class to aid graph construction of a 1D Fast-Fourier-Transform.
 class FFTBuilder {
   poplar::Graph &graph;
-  poplar::program::Sequence &prog;
   const std::string debugPrefix;
 
 public:
   /// Make an fft builder object.
   /// When fft1d is called the FFT program will
   /// be appended to the specified sequence.
-  FFTBuilder(poplar::Graph &graph,
-             poplar::program::Sequence &sequence,
-             const std::string debugName)
-    : graph(graph), prog(sequence), debugPrefix(debugName),
+  FFTBuilder(poplar::Graph &graph, const std::string debugName)
+    : graph(graph), debugPrefix(debugName),
       availableMemoryProportion(-1.f), flopEstimate(0) {}
 
   /// Set the proportion of memory available for the inner DFT matrix-multiplies.
@@ -114,7 +111,7 @@ public:
   /// Build the compute graph that applies FFT to the given complex vector.
   /// The program will be appended to the sequence specified in construction
   /// of this object.
-  ComplexTensor fft1d(ComplexTensor input, std::size_t radix = 0);
+  ComplexTensor fft1d(poplar::program::Sequence& prog, ComplexTensor input, std::size_t radix = 0);
 
   /// Build a compute graph that applies a 2D-FFT to a complex matrix.
   /// The computation will be serialised into chunks determined by the
@@ -126,7 +123,7 @@ public:
   ///
   /// The program will be appended to the sequence specified in
   /// construction of this object.
-  ComplexTensor fft2d(ComplexTensor input, std::size_t radix, std::size_t serialisationFactor=1);
+  ComplexTensor fft2d(poplar::program::Sequence& prog, ComplexTensor input, std::size_t radix, std::size_t serialisationFactor=1);
 
   /// Return the sum of FLOPs counted during all FFT building performed by this object.
   /// The counts are coarse estimates, not the exact number of FLOPs executed by the hardware.
@@ -137,28 +134,26 @@ private:
   std::size_t flopEstimate;
 
   // Utility functions used in construction of the FFT graph program.
-  ComplexTensor multiplyMatrixByVectorBatch(const ComplexTensor matrix, ComplexTensor vectors);
-  ComplexTensor dft1d(ComplexTensor fourierMatrix, ComplexTensor even, ComplexTensor odd);
+  ComplexTensor multiplyMatrixByVectorBatch(poplar::program::Sequence& fftSeq, const ComplexTensor matrix, ComplexTensor vectors);
+  ComplexTensor dft1d(poplar::program::Sequence& fftSeq, ComplexTensor fourierMatrix, ComplexTensor even, ComplexTensor odd);
   std::pair<ComplexTensor, ComplexTensor> splitEvenOdd(ComplexTensor input);
   ComplexTensor inverseFourierMatrices(std::size_t length, poplar::Type elemType);
   ComplexTensor twiddleCoefficients(std::size_t N, poplar::Type elemType);
 
+  /// Internal utility that holds a graph function together with
+  // input and output tensors and implements a callable interface.
   struct FunctionClosure {
     poplar::Function function;
     ComplexTensor input;
     ComplexTensor output;
 
-    poplar::program::Program operator () (ComplexTensor& argIn, ComplexTensor& argOut) {
-      poplar::program::Sequence seq;
-      seq.add(copy(argIn, input));
-      seq.add(poplar::program::Call(function));
-      seq.add(copy(output, argOut));
-      return seq;
-    }
+    /// Apply the graph function to the specified arguments. argIn is copied into the input tensors
+    /// and the result is copied to argOut. (The graph function input and output tensors are captured
+    /// in the closure). Returns a graph program that executes the function call.
+    poplar::program::Program operator () (ComplexTensor& argIn, ComplexTensor& argOut);
   };
 
-  FunctionClosure fft1dMakeGraphFunction(poplar::program::Program& prog,
-                                         std::size_t radix,
+  FunctionClosure fft1dMakeGraphFunction(std::size_t radix,
                                          poplar::Type elementType,
                                          const std::vector<std::size_t>& shape);
 };

@@ -38,14 +38,14 @@ struct FourierTransform :
     poplin::addCodelets(graph);
     poplar::program::Sequence prog;
 
-    poplar::program::Sequence fftSeq;
-    complex::FFTBuilder builder(graph, fftSeq, "fft_builder");
+    complex::FFTBuilder builder(graph, "fft_builder");
     auto input = complex::ComplexTensor(graph, poplar::FLOAT, {batchSize, size}, "a");
     input.mapLinearly(graph);
 
     ipu_utils::logger()->info("Building FFT of input-size {} batch-size {} radix-size {}", size, batchSize, radixSize);
     builder.setAvailableMemoryProportion(availableMemoryProportion);
-    auto output = builder.fft2d(input, radixSize, serialisation);
+    poplar::program::Sequence fftSeq;
+    auto output = builder.fft2d(fftSeq, input, radixSize, serialisation);
     ipu_utils::logger()->info("FFT estimated FLOP count: {}", builder.getFlopEstimate());
 
     auto cycleCount = poplar::cycleCount(graph, fftSeq, 0, poplar::SyncType::INTERNAL);
