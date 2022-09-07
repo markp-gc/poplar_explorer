@@ -73,7 +73,7 @@ if __name__ == "__main__":
     if args.csv_out:
       print("Writing CSV headers")
       with open(args.csv_out, "w") as f:
-        f.write(f"FFT-Type, Input-size,Batch-size,Radix-size,DFT Batch-size,Cycles,FLOPS Estimate,FLOPS/Cycle,GFLOPS/sec,Memory Including Gaps (bytes),Peak Live Memory Step, Peak Live Memory (bytes)\n")
+        f.write(f"FFT-Type,Input-size,Batch-size,Radix-size,DFT Batch-size,Cycles,FLOPS Estimate,FLOPS/Cycle,GFLOPS/sec,Memory Including Gaps (bytes),Peak Live Memory Step, Peak Live Memory (bytes)\n")
       exit()
     else:
       raise RuntimeError("Can't write headers: no output file specified.")
@@ -86,6 +86,9 @@ if __name__ == "__main__":
 
   peak_name, peak_live_memory = getPeakLivenessStep(report)
   print(f"Program step consuming peak memory: {peak_name} {peak_live_memory}")
+
+  # Replace commas in peak name:
+  peak_name = peak_name.replace(',',';')
 
   fft_type, size, bs, radix, cycles, flops, dft_batch_size = getFFTInfoFromLog(args.log_file)
   flops_per_cycle = flops/cycles if flops else None
