@@ -92,42 +92,4 @@ ComplexTensor multiply(poplar::Graph& graph,
 /// Create copy program for both real and imaginary parts:
 poplar::program::Sequence copy(const ComplexTensor& src, const ComplexTensor& dst);
 
-/// Class to aid graph construction of a 1D Fast-Fourier-Transform.
-class FFTBuilder {
-  poplar::Graph &graph;
-  poplar::program::Sequence &prog;
-  const std::string debugPrefix;
-
-public:
-  /// Make an fft builder object.
-  /// When fft1d is called the FFT program will
-  /// be appended to the specified sequence.
-  FFTBuilder(poplar::Graph &graph,
-             poplar::program::Sequence &sequence,
-             const std::string debugName)
-    : graph(graph), prog(sequence), debugPrefix(debugName),
-      availableMemoryProportion(-1.f), flopEstimate(0) {}
-
-  /// Set the proportion of memory available for the inner DFT matrix-multiplies.
-  void setAvailableMemoryProportion(float proportion) { availableMemoryProportion = proportion; }
-
-  /// Build the compute graph that applies FFT to the given complex vector.
-  /// The program will be appended to the sequence specified in construction
-  /// of this object.
-  ComplexTensor fft1d(ComplexTensor input, std::size_t radix = 0);
-
-  std::size_t getFlopEstimate() const { return flopEstimate; }
-
-private:
-  float availableMemoryProportion;
-  std::size_t flopEstimate;
-
-  // Utility functions used in construction of the FFT graph program.
-  ComplexTensor multiplyMatrixByVectorBatch(const ComplexTensor matrix, ComplexTensor vectors);
-  ComplexTensor dft1d(ComplexTensor fourierMatrix, ComplexTensor even, ComplexTensor odd);
-  std::pair<ComplexTensor, ComplexTensor> splitEvenOdd(ComplexTensor input);
-  ComplexTensor inverseFourierMatrices(std::size_t length, poplar::Type elemType);
-  ComplexTensor twiddleCoefficients(std::size_t N, poplar::Type elemType);
-};
-
 } // namespace complex

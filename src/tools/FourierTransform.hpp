@@ -16,7 +16,7 @@
 #include <poputil/TileMapping.hpp>
 #include <poputil/Util.hpp>
 
-#include "../fft/complex.hpp"
+#include "../fft/FFTBuilder.hpp"
 #include "../fft/utils.hpp"
 
 #include <boost/program_options.hpp>
@@ -29,7 +29,8 @@
 struct FourierTransform :
   public ipu_utils::BuilderInterface, public ToolInterface
 {
-  FourierTransform() : size(0), batchSize(0), radixSize(0) {}
+  FourierTransform() : size(0), batchSize(0), radixSize(0),
+                       serialisation(0), availableMemoryProportion(-1.f) {}
   virtual ~FourierTransform() {}
 
   void build(poplar::Graph& graph, const poplar::Target&) override {
@@ -37,14 +38,20 @@ struct FourierTransform :
     poplin::addCodelets(graph);
     poplar::program::Sequence prog;
 
-    poplar::program::Sequence fftSeq;
-    complex::FFTBuilder builder(graph, fftSeq, "fft_builder");
+    FFTBuilder builder(graph, "fft_builder");
     auto input = complex::ComplexTensor(graph, poplar::FLOAT, {batchSize, size}, "a");
     input.mapLinearly(graph);
-
-    ipu_utils::logger()->info("Building FFT of input-size {} batch-size {} radix-size {}", size, batchSize, radixSize);
     builder.setAvailableMemoryProportion(availableMemoryProportion);
-    auto output = builder.fft1d(input, radixSize);
+    poplar::program::Sequence fftSeq;
+    complex::ComplexTensor output;
+    if (fftType == "1d") {
+      ipu_utils::logger()->info("Building 1D-FFT of input-size {} batch-size {} radix-size {}", size, batchSize, radixSize);
+      output = builder.fft1d(fftSeq, input, radixSize);
+    } else {
+      ipu_utils::logger()->info("Building 2D-FFT of input-size {} x {} radix-size {} (batch-size 1)", size, batchSize, radixSize);
+      output = builder.fft2d(fftSeq, input, radixSize, serialisation);
+    }
+
     ipu_utils::logger()->info("FFT estimated FLOP count: {}", builder.getFlopEstimate());
 
     auto cycleCount = poplar::cycleCount(graph, fftSeq, 0, poplar::SyncType::INTERNAL);
@@ -61,13 +68,13 @@ struct FourierTransform :
 
   void execute(poplar::Engine& engine, const poplar::Device& device) override {
     // Create input values and write to the device:
-    auto step = 1.f / size;
+    auto x = 0u;
     for (auto b = 0u; b < batchSize; ++b) {
       // Each item in a batch is identical:
       for (auto i = 0u; i < size; ++i) {
-        auto x = i * step;
-        realData[b*size + i] = x * x;
-        imagData[b*size + i] = (1 - x) * x;
+        x += 1;
+        realData[b*size + i] = x;
+        imagData[b*size + i] = x;
       }
     }
 
@@ -89,7 +96,7 @@ struct FourierTransform :
     uint64_t cycleCount = 0u;
     ipu_utils::readScalar(engine, "cycle_count", cycleCount);
     ipu_utils::logger()->info("FFT completed in {} cycles.", cycleCount);
-    if (size < 32u && batchSize < 5u) {
+    if (size <= 16u && batchSize <= 8u) {
       for (auto b = 0u; b < batchSize; ++b) {
         ipu_utils::logger()->info("1D FFT result[{}] Re:\n{}\n", b, slice(realData, b * size, (b + 1) * size));
         ipu_utils::logger()->info("1D FFT result[{}] Im:\n{}\n", b, slice(imagData, b * size, (b + 1) * size));
@@ -100,6 +107,8 @@ struct FourierTransform :
   void addToolOptions(boost::program_options::options_description& desc) override {
     namespace po = boost::program_options;
     desc.add_options()
+    ("fft-type", po::value<std::string>(&fftType)->default_value("1d"),
+     "Dimensionality of the FFT to compute 1D treats input as a batch of 1D vectors. 2D treats input as a 2D field of batch-size 1.")
     ("fft-size", po::value<std::size_t>(&size)->default_value(1024),
      "Dimension of input vector to 1D FFT.")
     ("batch-size", po::value<std::size_t>(&batchSize)->default_value(1),
@@ -107,11 +116,17 @@ struct FourierTransform :
     ("radix-size", po::value<std::size_t>(&radixSize)->default_value(0),
      "Choose radix size (base case size at which DFT matrix-multiply is performed). The default (0) automatically "
      "sets the radix to half the input size (i.e. no FFT recursion).")
+    ("serialisation-factor", po::value<std::size_t>(&serialisation)->default_value(1),
+     "For FFT-2D controls how many chunks the input is split into. Higher values trade performance for reduced memory use.")
     ("available-memory-proportion", po::value<float>(&availableMemoryProportion)->default_value(-1.f),
      "Set the memory proportion available for the inner DFT matrix multiplies. Default: use the Poplar default.");
   }
 
   void init(const boost::program_options::variables_map& args) override {
+    if (fftType != "1d" && fftType != "2d" ) {
+      throw std::runtime_error("Option 'fftType' must be either '1d' or '2d'.");
+    }
+
     if (size % 2) {
       throw std::logic_error("FFT input size must be a multiple of 2.");
     }
@@ -126,9 +141,11 @@ struct FourierTransform :
   }
 
 private:
+  std::string fftType;
   std::size_t size;
   std::size_t batchSize;
   std::size_t radixSize;
+  std::size_t serialisation;
   float availableMemoryProportion;
   std::vector<float> realData;
   std::vector<float> imagData;
