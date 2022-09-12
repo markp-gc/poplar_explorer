@@ -52,6 +52,8 @@ if __name__ == "__main__":
                     help='Choose base for y-axis log scale (a value of 0 disables log scale for this axis).')
   parser.add_argument('--log-base-color', default=10, type=int,
                     help='Choose base for color-bar log scale (a value of 0 disables log scale for the color bar data).')
+  parser.add_argument('--marker-alpha', default=1.0, type=float,
+                    help='Opacity/alpha value for the markers (0.0 - fully transparent, 1.0 - fully opaque).')
   args = parser.parse_args()
 
   df = pd.read_csv(args.csv, header=0)
@@ -116,7 +118,7 @@ if __name__ == "__main__":
 
   plt1 = df.plot(ax=axis1,
                 kind='scatter', x=x_field, y=y_field,
-                s=sizes,
+                s=sizes, alpha=args.marker_alpha,
                 c=nc, cmap=cmap, colorbar=False)
   if not args.log_base_x == 0:
     plt1.set_xscale('log', base=args.log_base_x)
