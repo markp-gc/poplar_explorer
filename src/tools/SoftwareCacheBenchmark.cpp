@@ -9,6 +9,35 @@
 
 #include <poprand/codelets.hpp>
 #include <poprand/RandomGen.hpp>
+#include <gcl/TileAllocation.hpp>
+
+template <class T>
+std::vector<T> slice(const std::vector<T>& v, std::size_t start, std::size_t end) {
+  return std::vector<T>(v.begin() + start, v.begin() + end);
+}
+
+struct AsyncIoGraphs {
+  AsyncIoGraphs(poplar::Graph& graph, unsigned numTilesForIO)
+  : ioTiles(gcl::perIPUTiles(graph, 0, numTilesForIO)),
+    computeTiles(gcl::perIPUTiles(graph, numTilesForIO, graph.getTarget().getNumTiles() - numTilesForIO))
+  {
+    ioGraph = graph.createVirtualGraph(ioTiles);
+    computeGraph = graph.createVirtualGraph(computeTiles);
+  }
+
+  std::vector<unsigned> ioTiles;
+  std::vector<unsigned> computeTiles;
+  poplar::Graph ioGraph;
+  poplar::Graph computeGraph;
+};
+
+AsyncIoGraphs makeIoGraph(poplar::Graph& graph, unsigned numTilesForIO) {
+  // Get two disjoint sets of tiles to use for compute and IO:
+  const auto minIOTiles = gcl::getMinIoTiles(graph);
+  numTilesForIO = std::max(minIOTiles, numTilesForIO);
+
+  return AsyncIoGraphs(graph, numTilesForIO);
+}
 
 void SoftwareCacheBenchmark::init(const boost::program_options::variables_map& args) {
   cache.reset(
@@ -22,16 +51,21 @@ void SoftwareCacheBenchmark::build(poplar::Graph& graph, const poplar::Target&) 
   using namespace poplar::program;
 
   popops::addCodelets(graph);
+  auto graphs = makeIoGraph(graph, 32u);
+  ipu_utils::logger()->info("Reserved {} tiles for asynchronous IO", graphs.ioTiles.size());
 
   // Build the graph for the cache:
   bool optimiseMemoryUse = !optimiseCycles;
   ipu_utils::logger()->info("Optimise memory use: {}", optimiseMemoryUse);
-  cache->build(graph, optimiseMemoryUse);
+  cache->build(graphs.computeGraph, graphs.ioGraph, optimiseMemoryUse);
 
   // Register programs:
   getPrograms().add("write_indices", cache->offsetStreamSequence);
   getPrograms().add("cache_fetch", cache->cacheFetchProg);
   getPrograms().add("copy_cache_to_host", cache->cacheReadProg);
+
+  auto cycleCountReadProg = cache->cacheFetchCycleCount.buildRead(graphs.computeGraph, true);
+  getPrograms().add("read_cycle_count", cycleCountReadProg);
 }
 
 void SoftwareCacheBenchmark::execute(poplar::Engine& engine, const poplar::Device& device) {
@@ -69,6 +103,13 @@ void SoftwareCacheBenchmark::execute(poplar::Engine& engine, const poplar::Devic
   std::shuffle(cacheDestinationIndices.begin(), cacheDestinationIndices.end(), g);
   cacheDestinationIndices.resize(fetchCount);
 
+  if (remoteBufferIndices.size() < 10) {
+    ipu_utils::logger()->info("Remote buffer indices to fetch:\n{}", remoteBufferIndices);
+  }
+  if (cacheDestinationIndices.size() < 10) {
+    ipu_utils::logger()->info("Indices of destination in cache:\n{}", cacheDestinationIndices);
+  }
+
   // Buffer to read back the cache at end:
   std::vector<std::int32_t> cacheContents(residentSetSize * lineSize);
 
@@ -88,14 +129,43 @@ void SoftwareCacheBenchmark::execute(poplar::Engine& engine, const poplar::Devic
   }
   auto cacheFetchEndTime = std::chrono::steady_clock::now();
   seconds = std::chrono::duration<double>(cacheFetchEndTime - cacheFetchStartTime).count();
-  gigaBytesPerSec = (1e-9 / seconds) * lineSize * fetchCount * iterations * sizeof(float);
+  double bytesPerCacheFetch = lineSize * fetchCount * sizeof(float);
+  gigaBytesPerSec = (1e-9 / seconds) * bytesPerCacheFetch * iterations;
   ipu_utils::logger()->info("Cache fetch time (remote-buffer to IPU): {} secs rate: {} GB/sec", seconds, gigaBytesPerSec);
 
-  if (cacheContents.size() < 100) {
-    progs.run(engine, "copy_cache_to_host");
-    ipu_utils::logger()->info("Cache state:\n{}", cacheContents);
+  // Read cycle count for more accurate measurement:
+  progs.run(engine, "read_cycle_count");
+  ipu_utils::logger()->info("Cycles per cache fetch: {}", cache->cacheFetchCycles);
+  ipu_utils::logger()->info("Bytes per cycle (effective): {}", bytesPerCacheFetch / cache->cacheFetchCycles);
+
+  // For debug/test read back the cache:
+  progs.run(engine, "copy_cache_to_host");
+
+  if (residentSetSize < 100) {
+    ipu_utils::logger()->info("Cache state:\n");
+    for (auto r = 0u; r < residentSetSize; ++r) {
+      auto pos = r * lineSize;
+      ipu_utils::logger()->info("Line {}: {}", r, slice(cacheContents, pos, pos + lineSize));
+    }
   } else {
     ipu_utils::logger()->info("Supressed output: too large ({} elements).", cacheContents.size());
+  }
+
+  // Check cache contents is correct:
+  std::vector<std::uint32_t> expected(residentSetSize);
+  for (auto r = 0u; r < residentSetSize; ++r) {
+    // Find the cache line index in the scattering indices:
+    auto itr = std::find(cacheDestinationIndices.begin(), cacheDestinationIndices.end(), r);
+    auto expected = 0u; // If its not there expect 0
+    if (itr != cacheDestinationIndices.end()) {
+      // Found the index so the expected value can be looked up in the corresponding position in the remote buffer. 
+      expected = remoteBufferIndices[itr - cacheDestinationIndices.begin()];
+    }
+    auto pos = r * lineSize;
+    auto line = slice(cacheContents, pos, pos + lineSize);
+    if (!std::all_of(line.begin(), line.end(), [expected](std::uint32_t v) { return v == expected; })) {
+      ipu_utils::logger()->error("Expected cache line {} to contain {} but saw {}", r, expected, line);
+    }
   }
 }
 

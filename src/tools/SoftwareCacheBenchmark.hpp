@@ -5,13 +5,14 @@
 #include "ipu_utils.hpp"
 #include "io_utils.hpp"
 #include "tool_registry.hpp"
-
 #include <memory/gather.hpp>
 #include <memory/scatter.hpp>
 
 #include <memory>
 
 #include <boost/program_options.hpp>
+
+#include <poplar/CycleCount.hpp>
 
 /// A cache provides a local table of variables that can be filled from
 /// a larger table of variables stored in a remote buffer (i.e. DRAM).
@@ -31,38 +32,39 @@ struct SoftwareCache {
     fetchCount(remoteFetchCount),
     residentSet(cacheName + "/resident_set"),
     remoteFetchOffsets(cacheName + "/fetch_offsets"),
-    cacheScatterOffsets(cacheName + "/scatter_offsets")
+    cacheScatterOffsets(cacheName + "/scatter_offsets"),
+    cacheFetchCycleCount(cacheName + "/cache_fetch_cycles")
   {}
 
   std::string getRemoteBufferName() const { return name + "/remote_feature_buffer"; }
 
-  void build(poplar::Graph& graph, bool optimiseCopyMemoryUse = true) {
+  void build(poplar::Graph& computeGraph, poplar::Graph& ioGraph, bool optimiseCopyMemoryUse = true) {
     using namespace poplar::program;
 
     ipu_utils::logger()->info("Cache '{}': Building cache of {} lines of size {}.", name, totalCacheLines, cacheLineSize);
 
     // Create remote buffer for the feature store:
     ipu_utils::logger()->info("Cache '{}': Building remote buffer with {} rows/lines", name, cacheableSetSize);
-    remoteFeatures = graph.addRemoteBuffer(getRemoteBufferName(), dataType, cacheLineSize, cacheableSetSize);
+    remoteFeatures = computeGraph.addRemoteBuffer(getRemoteBufferName(), dataType, cacheLineSize, cacheableSetSize);
 
     // Create variables needed for the cache:
-    residentSet = popops::createSliceableTensor(graph, dataType, {totalCacheLines, cacheLineSize}, {0}, {1}, {}, {}, name + "/resident_set");
-    cacheReadProg.add(residentSet.buildRead(graph, optimiseCopyMemoryUse));
+    residentSet = popops::createSliceableTensor(computeGraph, dataType, {totalCacheLines, cacheLineSize}, {0}, {1}, {}, {}, name + "/resident_set");
+    cacheReadProg.add(residentSet.buildRead(computeGraph, optimiseCopyMemoryUse));
 
-    remoteFetchOffsets = graph.addVariable(poplar::UNSIGNED_INT, {fetchCount}, poplar::VariableMappingMethod::LINEAR);
-    offsetStreamSequence.add(remoteFetchOffsets.buildWrite(graph, optimiseCopyMemoryUse));
+    remoteFetchOffsets = computeGraph.addVariable(poplar::UNSIGNED_INT, {fetchCount}, poplar::VariableMappingMethod::LINEAR);
+    offsetStreamSequence.add(remoteFetchOffsets.buildWrite(computeGraph, optimiseCopyMemoryUse));
 
     scatter::MultiUpdate scatterToCache(name + "/scatter_to_cache", residentSet, fetchCount, false);
-    scatterToCache.plan(graph);
+    scatterToCache.plan(computeGraph);
 
     // Create a temporary tensor for holding the IPU side cache.
-    auto fetchBuffer = scatterToCache.createSource(graph);
-    cacheScatterOffsets = scatterToCache.createIndices(graph);
-    offsetStreamSequence.add(cacheScatterOffsets.buildWrite(graph, optimiseCopyMemoryUse));
+    auto fetchBuffer = scatterToCache.createSource(computeGraph);
+    cacheScatterOffsets = scatterToCache.createIndices(computeGraph);
+    offsetStreamSequence.add(cacheScatterOffsets.buildWrite(computeGraph, optimiseCopyMemoryUse));
 
     const std::vector<std::size_t> fetchShape = {fetchCount, cacheLineSize};
 
-    // The fetch program will read fromt the remote buffer into the
+    // The fetch program will read from the remote buffer into the
     // fetch buffer and then scatter from the fetch buffer into the cache:
     ipu_utils::logger()->info("Cache '{}': Building cache fetch program (fetches {} lines)", name, fetchCount);
     cacheFetchProg = Sequence();
@@ -70,9 +72,10 @@ struct SoftwareCache {
     cacheFetchProg.add(WriteUndef(remoteFetchOffsets, name + "/unlive_feature_offsets"));
 
     ipu_utils::logger()->info("Cache '{}': Building update (scatter {} lines from fetchbuffer into residentSet).", name, fetchCount);
-    scatterToCache.createProgram(graph, fetchBuffer, cacheScatterOffsets, cacheFetchProg);
+    scatterToCache.createProgram(computeGraph, fetchBuffer, cacheScatterOffsets, cacheFetchProg);
     cacheFetchProg.add(WriteUndef(fetchBuffer, name + "/unlive_fetch_buffer"));
     cacheFetchProg.add(WriteUndef(cacheScatterOffsets, name + "/unlive_fetch_buffer_indices"));
+    cacheFetchCycleCount = poplar::cycleCount(computeGraph, cacheFetchProg, 0, poplar::SyncType::INTERNAL);
 
     ipu_utils::logger()->info("Done building cache");
   }
@@ -86,6 +89,7 @@ struct SoftwareCache {
     ipu_utils::connectStream(e, remoteFetchOffsets.getWriteHandle(), remoteIndices);
     ipu_utils::connectStream(e, cacheScatterOffsets.getWriteHandle(), localIndices);
     ipu_utils::connectStream(e, residentSet.getReadHandle(), cacheData);
+    cacheFetchCycleCount.connectReadStream(e, &cacheFetchCycles);
   }
 
   const std::string name;
@@ -124,6 +128,10 @@ struct SoftwareCache {
 
   // Program to read back the entire cache to the host (mainly intended for debugging):
   poplar::program::Sequence cacheReadProg;
+
+  // Tensor to store cycle count for just the cache fetch program:
+  ipu_utils::StreamableTensor cacheFetchCycleCount;
+  std::uint64_t cacheFetchCycles;
 };
 
 struct SoftwareCacheBenchmark :
