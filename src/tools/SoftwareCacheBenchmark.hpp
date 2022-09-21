@@ -47,31 +47,47 @@ struct SoftwareCache {
     ipu_utils::logger()->info("Cache '{}': Building remote buffer with {} rows/lines", name, cacheableSetSize);
     remoteFeatures = computeGraph.addRemoteBuffer(getRemoteBufferName(), dataType, cacheLineSize, cacheableSetSize);
 
-    // Create variables needed for the cache:
+    // Create variables needed for the cache.
+
+    // Resident set lives on the compute tiles:
     residentSet = popops::createSliceableTensor(computeGraph, dataType, {totalCacheLines, cacheLineSize}, {0}, {1}, {}, {}, name + "/resident_set");
     cacheReadProg.add(residentSet.buildRead(computeGraph, optimiseCopyMemoryUse));
 
-    remoteFetchOffsets = computeGraph.addVariable(poplar::UNSIGNED_INT, {fetchCount}, poplar::VariableMappingMethod::LINEAR);
-    offsetStreamSequence.add(remoteFetchOffsets.buildWrite(computeGraph, optimiseCopyMemoryUse));
+    // The variables used for remote buffer fetches need to live on the IO tiles:
+    remoteFetchOffsets = ioGraph.addVariable(poplar::UNSIGNED_INT, {fetchCount}, poplar::VariableMappingMethod::LINEAR);
 
+    // Scattering data from the fetch buffer into the resident set happens on the compute tiles:
     scatter::MultiUpdate scatterToCache(name + "/scatter_to_cache", residentSet, fetchCount, false);
     scatterToCache.plan(computeGraph);
+    cacheScatterOffsets = scatterToCache.createIndices(computeGraph, "");
 
-    // Create a temporary tensor for holding the IPU side cache.
-    auto fetchBuffer = scatterToCache.createSource(computeGraph);
-    cacheScatterOffsets = scatterToCache.createIndices(computeGraph);
+    // We need two "fetch buffers". One on the IO tiles to receive from the remote buffer
+    // and a second duplicate on the compute tiles:
+    auto fetchBuffer = scatterToCache.createSource(computeGraph, "compute_fetch_buffer");
+    auto ioFetchBuffer = ioGraph.addVariable(fetchBuffer.elementType(), fetchBuffer.shape(), "io_fetch_buffer");
+    poputil::mapTensorLinearly(ioGraph, ioFetchBuffer);
+
+    offsetStreamSequence.add(remoteFetchOffsets.buildWrite(ioGraph, optimiseCopyMemoryUse));
     offsetStreamSequence.add(cacheScatterOffsets.buildWrite(computeGraph, optimiseCopyMemoryUse));
-
-    const std::vector<std::size_t> fetchShape = {fetchCount, cacheLineSize};
 
     // The fetch program will read from the remote buffer into the
     // fetch buffer and then scatter from the fetch buffer into the cache:
+    const std::vector<std::size_t> fetchShape = {fetchCount, cacheLineSize};
     ipu_utils::logger()->info("Cache '{}': Building cache fetch program (fetches {} lines)", name, fetchCount);
-    cacheFetchProg = Sequence();
-    cacheFetchProg.add(Copy(remoteFeatures, fetchBuffer.reshape(fetchShape), remoteFetchOffsets, name + "/copy_host_features_to_cache"));
-    cacheFetchProg.add(WriteUndef(remoteFetchOffsets, name + "/unlive_feature_offsets"));
-
+    Sequence ioReadRemoteBuffer;
+    ioReadRemoteBuffer.add(Copy(remoteFeatures, ioFetchBuffer.reshape(fetchShape), remoteFetchOffsets, name + "/copy_rb_features_to_io_tiles"));
+    ioReadRemoteBuffer.add(WriteUndef(remoteFetchOffsets, name + "/unlive_rb_feature_offsets"));
+ 
     ipu_utils::logger()->info("Cache '{}': Building update (scatter {} lines from fetchbuffer into residentSet).", name, fetchCount);
+
+    // Before we can scatter to the full cache we need to move the
+    // fetched data from the IO tiles to a temporary buffer on the
+    // compute tiles:
+    cacheFetchProg = Sequence();
+    cacheFetchProg.add(ioReadRemoteBuffer);
+    cacheFetchProg.add(poplar::program::Copy(ioFetchBuffer, fetchBuffer));
+
+    // Now build the scatter program:
     scatterToCache.createProgram(computeGraph, fetchBuffer, cacheScatterOffsets, cacheFetchProg);
     cacheFetchProg.add(WriteUndef(fetchBuffer, name + "/unlive_fetch_buffer"));
     cacheFetchProg.add(WriteUndef(cacheScatterOffsets, name + "/unlive_fetch_buffer_indices"));

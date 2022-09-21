@@ -19,7 +19,7 @@
 namespace scatter {
 
 struct MultiUpdate {
-  const std::string name;
+  const std::string cacheName;
   const poplar::Tensor valuesToUpdate;
   const std::size_t featureCount;
   const std::size_t featureSize;
@@ -28,10 +28,11 @@ struct MultiUpdate {
   popops::SlicePlan slicePlan;
   const bool planned;
 
-  MultiUpdate(const std::string& name,
+  MultiUpdate(const std::string& debugName,
               poplar::Tensor destination,
               std::size_t updateCount, bool usePlan)
   :
+    cacheName(debugName),
     valuesToUpdate(destination),
     featureCount(destination.dim(0)),
     featureSize(destination.dim(1)),
@@ -47,12 +48,12 @@ struct MultiUpdate {
     }
   }
 
-  poplar::Tensor createSource(poplar::Graph& graph) {
+  poplar::Tensor createSource(poplar::Graph& graph, const std::string& name) {
     auto sliceFrom = popops::createSliceTensor(graph, valuesToUpdate, {0}, {1}, count, name + "/source");
     return sliceFrom;
   }
 
-  poplar::Tensor createIndices(poplar::Graph& graph) {
+  poplar::Tensor createIndices(poplar::Graph& graph, const std::string& name) {
     return popops::createIndicesTensor(graph, {0}, count, slicePlan, optionFlags, name + "/indices");
   }
 
@@ -65,7 +66,7 @@ struct MultiUpdate {
     ipu_utils::logger()->debug("Src shape: ({})", valuesToInsert.shape());
     ipu_utils::logger()->debug("Indices shape: ({})", indicesToUpdate.shape());
 
-    popops::multiUpdate(graph, valuesToUpdate, valuesToInsert, indicesToUpdate, {0}, {1}, program, slicePlan, optionFlags, name + "/output");
+    popops::multiUpdate(graph, valuesToUpdate, valuesToInsert, indicesToUpdate, {0}, {1}, program, slicePlan, optionFlags, cacheName + "/output");
   }
 };
 
