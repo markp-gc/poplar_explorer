@@ -56,7 +56,7 @@ void KNNBenchmark::build(poplar::Graph& g, const poplar::Target&) {
     knn.add(queryWrite);
   }
   if (numReplicas > 1) {
-    auto gatheredQuery = gcl::allGatherCrossReplica(g, query, knn, "queryToReplicas");
+    auto gatheredQuery = gcl::allGatherCrossReplica(g, query, knn, gcl::CommGroup(), "queryToReplicas");
     knn.add(Copy(gatheredQuery.flatten(), queryM.flatten()));
   }
 
@@ -77,9 +77,9 @@ void KNNBenchmark::build(poplar::Graph& g, const poplar::Target&) {
     auto expr = popops::expr::Add(popops::expr::_1,
                   popops::expr::Mul(popops::expr::Const(numVecs), popops::expr::_2));
     popops::mapInPlace(g, expr, {ipuIndices, repIndex}, knn, "addIndexOffsets");
-    auto gatheredResults = gcl::allGatherCrossReplica(g, ipuResults, knn, "allGather"); // [batch, k] -> [r, batch, k]
+    auto gatheredResults = gcl::allGatherCrossReplica(g, ipuResults, knn, gcl::CommGroup(), "allGather"); // [batch, k] -> [r, batch, k]
     gatheredResults = gatheredResults.dimShuffle({1, 0, 2}).reshape({batchSize, numReplicas * k});
-    auto gatheredIndices= gcl::allGatherCrossReplica(g, ipuIndices, knn, "allGather"); // [batch, k] -> [r, batch, k]
+    auto gatheredIndices= gcl::allGatherCrossReplica(g, ipuIndices, knn, gcl::CommGroup(), "allGather"); // [batch, k] -> [r, batch, k]
     gatheredIndices = gatheredIndices.dimShuffle({1, 0, 2}).reshape({batchSize, numReplicas * k});
     poplar::Tensor keys, values;
     std::tie(keys, values) =
