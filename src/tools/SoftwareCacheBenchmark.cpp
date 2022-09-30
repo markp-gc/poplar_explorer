@@ -51,6 +51,8 @@ void SoftwareCacheBenchmark::build(poplar::Graph& graph, const poplar::Target&) 
   using namespace poplar::program;
 
   popops::addCodelets(graph);
+  poprand::addCodelets(graph);
+
   auto graphs = makeIoGraph(graph, 32u);
   ipu_utils::logger()->info("Reserved {} tiles for asynchronous IO", graphs.ioTiles.size());
 
@@ -59,13 +61,27 @@ void SoftwareCacheBenchmark::build(poplar::Graph& graph, const poplar::Target&) 
   ipu_utils::logger()->info("Optimise memory use: {}", optimiseMemoryUse);
   cache->build(graphs.computeGraph, graphs.ioGraph, optimiseMemoryUse);
 
+  // Make a program that generates random remote buffer indices and random scatter indices:
+
+  remoteFetchOffsets
+
+  auto mainSequence = poplar::program::Sequence {
+    cache->updateResidentSetProg,
+    cache->readMemoryProg,
+    cache->cacheExchangeProg,
+  };
+
+  auto pipeline = poplar::program::Sequence {
+    cache->readMemoryProg,
+    cache->cacheExchangeProg,
+    poplar::program::Repeat(iterations - 1, mainSequence),
+    cache->updateResidentSetProg
+  };
+
   // Register programs:
   getPrograms().add("write_indices", cache->offsetStreamSequence);
-  getPrograms().add("cache_fetch", cache->cacheFetchProg);
+  getPrograms().add("cache_io_pipeline", pipeline);
   getPrograms().add("copy_cache_to_host", cache->cacheReadProg);
-
-  auto cycleCountReadProg = cache->cacheFetchCycleCount.buildRead(graphs.computeGraph, true);
-  getPrograms().add("read_cycle_count", cycleCountReadProg);
 }
 
 void SoftwareCacheBenchmark::execute(poplar::Engine& engine, const poplar::Device& device) {
@@ -124,9 +140,7 @@ void SoftwareCacheBenchmark::execute(poplar::Engine& engine, const poplar::Devic
   // Repeatedly fetch data into the cache:
   ipu_utils::logger()->info("Running {} iterations of cache fetches", iterations);
   auto cacheFetchStartTime = std::chrono::steady_clock::now();
-  for (auto i = 0u; i < iterations; ++i) {
-    progs.run(engine, "cache_fetch");
-  }
+  progs.run(engine, "cache_io_pipeline");
   auto cacheFetchEndTime = std::chrono::steady_clock::now();
   seconds = std::chrono::duration<double>(cacheFetchEndTime - cacheFetchStartTime).count();
   double bytesPerCacheFetch = lineSize * fetchCount * sizeof(float);
@@ -134,9 +148,9 @@ void SoftwareCacheBenchmark::execute(poplar::Engine& engine, const poplar::Devic
   ipu_utils::logger()->info("Cache fetch time (remote-buffer to IPU): {} secs rate: {} GB/sec", seconds, gigaBytesPerSec);
 
   // Read cycle count for more accurate measurement:
-  progs.run(engine, "read_cycle_count");
-  ipu_utils::logger()->info("Cycles per cache fetch: {}", cache->cacheFetchCycles);
-  ipu_utils::logger()->info("Bytes per cycle (effective): {}", bytesPerCacheFetch / cache->cacheFetchCycles);
+  //progs.run(engine, "read_cycle_count");
+  //ipu_utils::logger()->info("Cycles per cache fetch: {}", cache->cacheFetchCycles);
+  //ipu_utils::logger()->info("Bytes per cycle (effective): {}", bytesPerCacheFetch / cache->cacheFetchCycles);
 
   // For debug/test read back the cache:
   progs.run(engine, "copy_cache_to_host");

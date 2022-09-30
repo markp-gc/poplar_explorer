@@ -155,41 +155,41 @@ void OverlappedIO::build(poplar::Graph& graph, const poplar::Target& target) {
   // Create the pipeline (first ramp up, then run main-sequence loop, then ramp-down):
   auto pipeline = poplar::program::Sequence{
     // Ramp up/Priming stage
-    // comm input buffer = data[0]
+    // I/O input buffer = data[0]
     program_host_exchange_in,
-    // comp input buffer = data[0]
+    // Compute input buffer = data[0]
     program_internal_exchange_in,
     // [
-    //   comp output buffer = output[0],
-    //   comm input buffer = data[1]
+    //   Compute output buffer = output[0],
+    //   I/O input buffer = data[1]
     // ]
     poplar::program::Sequence{program_compute, program_host_exchange_in},
-    // comm output buffer = output[0]
+    // I/O output buffer = output[0]
     program_internal_exchange_out,
-    // comp input buffer = data[1]
+    // Compute input buffer = data[1]
     program_internal_exchange_in,
     // At this point the state is:
     // [
-    //   comm input = data[1], (stale)
-    //   comp input = data[1],
-    //   comp output = data[0],  (stale)
-    //   comm output = output[0]
+    //   I/O input = data[1], (stale)
+    //   Compute input = data[1],
+    //   Compute output = data[0],  (stale)
+    //   I/O output = output[0]
     // ]
     poplar::program::Repeat(numIterations - 2, main_sequence),
     // At this point the state is:
     // [
-    //   comm input = data[-1], (stale)
-    //   comp input = data[-1],
-    //   comp output = output[-2], (stale)
-    //   comm output = output[-2],
+    //   I/O input = data[-1], (stale)
+    //   Compute input = data[-1],
+    //   Compute output = output[-2], (stale)
+    //   I/O output = output[-2],
     // ]
     // Next steps:
     // [
     //   outfeed output[-2],
-    //   comp output = output[-1]
+    //   Compute output = output[-1]
     // ]
     poplar::program::Sequence{program_host_exchange_out, program_compute},
-    // comm output = output[-1]
+    // I/O output = output[-1]
     program_internal_exchange_out,
     // outfeed output[-1]
     program_host_exchange_out
