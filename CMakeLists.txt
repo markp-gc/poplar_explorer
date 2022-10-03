@@ -71,5 +71,5 @@ set(PROG_SRC
     ${CMAKE_SOURCE_DIR}/src/multi_tool.cpp
 )
 add_executable(multi-tool ${PROG_SRC})
-target_link_libraries(multi-tool Boost::program_options fft tools -lpopnn -lpoplin -lpopops -lpoputil -lpthread -lpvti)
+target_link_libraries(multi-tool Boost::program_options fft tools -lpopnn -lpoplin -lpopops -lpoputil -lpoprand -lpthread -lpvti)
 set_target_properties(multi-tool PROPERTIES BUILD_RPATH_USE_ORIGIN TRUE)

@@ -34,5 +34,6 @@ private:
   std::size_t fetchCount;
   std::size_t iterations;
   std::size_t seed;
+  std::size_t numIoTiles;
   bool optimiseCycles;
 };

@@ -80,8 +80,8 @@ struct SoftwareCache {
     // Program that copies between IO and compute tiles:
     cacheExchangeProg = poplar::program::Sequence();
     cacheExchangeProg.add(poplar::program::Copy(ioFetchBuffer, fetchBuffer));
-    cacheExchangeProg.add(WriteUndef(fetchBuffer, name + "/unlive_fetch_buffer"));
-    cacheExchangeProg.add(WriteUndef(cacheScatterOffsets, name + "/unlive_fetch_buffer_indices"));
+    // cacheExchangeProg.add(WriteUndef(fetchBuffer, name + "/unlive_fetch_buffer"));
+    // cacheExchangeProg.add(WriteUndef(cacheScatterOffsets, name + "/unlive_fetch_buffer_indices"));
 
     // Now build the scatter program:
     updateResidentSetProg = Sequence();

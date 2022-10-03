@@ -53,7 +53,7 @@ void SoftwareCacheBenchmark::build(poplar::Graph& graph, const poplar::Target&) 
   popops::addCodelets(graph);
   poprand::addCodelets(graph);
 
-  auto graphs = makeIoGraph(graph, 32u);
+  auto graphs = makeIoGraph(graph, numIoTiles);
   ipu_utils::logger()->info("Reserved {} tiles for asynchronous IO", graphs.ioTiles.size());
 
   // Build the graph for the cache:
@@ -63,18 +63,36 @@ void SoftwareCacheBenchmark::build(poplar::Graph& graph, const poplar::Target&) 
 
   // Make a program that generates random remote buffer indices and random scatter indices:
 
-  remoteFetchOffsets
+  // Randomise the scatter indices for next fetch:
+  Sequence randomiseIndicesProg;
+  auto randIndicesLocal = poprand::uniform(graphs.computeGraph, nullptr, 0u, cache->cacheScatterOffsets, poplar::INT, 0, cache->residentSet.numElements(), randomiseIndicesProg, "gen_rand_scatter_indices");
 
-  auto mainSequence = poplar::program::Sequence {
+  // Randomise the remote buffer fetch indices:
+  auto randIndicesRemote = graphs.computeGraph.addVariable(poplar::INT, cache->remoteFetchOffsets.shape(), "compute_tile_fetch_buffer");
+  poputil::mapTensorLinearly(graphs.computeGraph, randIndicesRemote);
+  randIndicesRemote = poprand::uniform(graphs.computeGraph, nullptr, 0u, randIndicesRemote, poplar::INT, 0, cache->cacheableSetSize, randomiseIndicesProg, "gen_rand_fetch_indices");
+
+  // Cast the new indices:
+  auto castComputeSet = graphs.ioGraph.addComputeSet("indices_cast_cs");
+  popops::cast(graphs.computeGraph, randIndicesLocal, cache->cacheScatterOffsets, castComputeSet);
+  auto newFetchOffsets = popops::cast(graphs.computeGraph, randIndicesRemote, poplar::UNSIGNED_INT, castComputeSet, "cast_");
+  randomiseIndicesProg.add(Execute(castComputeSet));
+  // Add a program to copy the remote fetch indices from the compute tiles back to the IO tiles:
+  randomiseIndicesProg.add(Copy(newFetchOffsets, cache->remoteFetchOffsets, "exchange_new_fetch_offsets"));
+
+  // Create the asynchronous I/O pipeline:
+  auto mainSequence = Sequence {
     cache->updateResidentSetProg,
     cache->readMemoryProg,
     cache->cacheExchangeProg,
+    randomiseIndicesProg,
   };
 
-  auto pipeline = poplar::program::Sequence {
+  auto pipeline = Sequence {
+    randomiseIndicesProg,
     cache->readMemoryProg,
     cache->cacheExchangeProg,
-    poplar::program::Repeat(iterations - 1, mainSequence),
+    Repeat(iterations - 1, mainSequence),
     cache->updateResidentSetProg
   };
 
@@ -147,11 +165,6 @@ void SoftwareCacheBenchmark::execute(poplar::Engine& engine, const poplar::Devic
   gigaBytesPerSec = (1e-9 / seconds) * bytesPerCacheFetch * iterations;
   ipu_utils::logger()->info("Cache fetch time (remote-buffer to IPU): {} secs rate: {} GB/sec", seconds, gigaBytesPerSec);
 
-  // Read cycle count for more accurate measurement:
-  //progs.run(engine, "read_cycle_count");
-  //ipu_utils::logger()->info("Cycles per cache fetch: {}", cache->cacheFetchCycles);
-  //ipu_utils::logger()->info("Bytes per cycle (effective): {}", bytesPerCacheFetch / cache->cacheFetchCycles);
-
   // For debug/test read back the cache:
   progs.run(engine, "copy_cache_to_host");
 
@@ -203,6 +216,9 @@ void SoftwareCacheBenchmark::addToolOptions(boost::program_options::options_desc
   )
   ("seed", po::value<std::size_t>(&seed)->default_value(10142),
    "Seed used to generate random indices."
+  )
+  ("num-io-tiles", po::value<std::size_t>(&numIoTiles)->default_value(32u),
+   "Number of tiles to reserve for asynchronous I/O."
   )
   ("optimise-cycles", po::bool_switch(&optimiseCycles)->default_value(false))
   ;
