@@ -45,7 +45,7 @@ struct SoftwareCache {
     cacheReadProg.add(residentSet.buildRead(computeGraph, optimiseCopyMemoryUse));
 
     // The variables used for remote buffer fetches need to live on the IO tiles:
-    remoteFetchOffsets = ioGraph.addVariable(poplar::UNSIGNED_INT, {fetchCount}, poplar::VariableMappingMethod::LINEAR);
+    remoteFetchOffsets = ioGraph.addVariable(poplar::UNSIGNED_INT, {fetchCount}, poplar::VariableMappingMethod::LINEAR, "rb_fetch_offsets");
 
     // Scattering data from the fetch buffer into the resident set happens on the compute tiles:
     scatter::MultiUpdate scatterToCache(name + "/scatter_to_cache", residentSet, fetchCount, false);
@@ -67,7 +67,7 @@ struct SoftwareCache {
     ipu_utils::logger()->info("Cache '{}': Building cache fetch program (fetches {} lines)", name, fetchCount);
     Sequence ioReadRemoteBuffer;
     ioReadRemoteBuffer.add(Copy(remoteFeatures, ioFetchBuffer.reshape(fetchShape), remoteFetchOffsets, name + "/copy_rb_features_to_io_tiles"));
-    ioReadRemoteBuffer.add(WriteUndef(remoteFetchOffsets, name + "/unlive_rb_feature_offsets"));
+    // ioReadRemoteBuffer.add(WriteUndef(remoteFetchOffsets, name + "/unlive_rb_feature_offsets"));
 
     ipu_utils::logger()->info("Cache '{}': Building update (scatter {} lines from fetchbuffer into residentSet).", name, fetchCount);
 

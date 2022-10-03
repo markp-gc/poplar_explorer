@@ -10,6 +10,8 @@
 #include <poprand/codelets.hpp>
 #include <poprand/RandomGen.hpp>
 #include <gcl/TileAllocation.hpp>
+#include <popops/ElementWise.hpp>
+#include <popops/codelets.hpp>
 
 template <class T>
 std::vector<T> slice(const std::vector<T>& v, std::size_t start, std::size_t end) {
@@ -63,37 +65,52 @@ void SoftwareCacheBenchmark::build(poplar::Graph& graph, const poplar::Target&) 
 
   // Make a program that generates random remote buffer indices and random scatter indices:
 
-  // Randomise the scatter indices for next fetch:
-  Sequence randomiseIndicesProg;
-  auto randIndicesLocal = poprand::uniform(graphs.computeGraph, nullptr, 0u, cache->cacheScatterOffsets, poplar::INT, 0, cache->residentSet.numElements(), randomiseIndicesProg, "gen_rand_scatter_indices");
+  // // Randomise the scatter indices for next fetch:
+  // Sequence randomiseIndicesProg;
+  // auto randIndicesLocal = poprand::uniform(graphs.computeGraph, nullptr, 0u, cache->cacheScatterOffsets, poplar::INT, 0, cache->residentSet.numElements(), randomiseIndicesProg, "gen_rand_scatter_indices");
 
-  // Randomise the remote buffer fetch indices:
-  auto randIndicesRemote = graphs.computeGraph.addVariable(poplar::INT, cache->remoteFetchOffsets.shape(), "compute_tile_fetch_buffer");
-  poputil::mapTensorLinearly(graphs.computeGraph, randIndicesRemote);
-  randIndicesRemote = poprand::uniform(graphs.computeGraph, nullptr, 0u, randIndicesRemote, poplar::INT, 0, cache->cacheableSetSize, randomiseIndicesProg, "gen_rand_fetch_indices");
+  // // Randomise the remote buffer fetch indices:
+  // auto randIndicesRemote = graphs.computeGraph.addVariable(poplar::INT, cache->remoteFetchOffsets.shape(), "compute_tile_fetch_offsets");
+  // poputil::mapTensorLinearly(graphs.computeGraph, randIndicesRemote);
+  // randIndicesRemote = poprand::uniform(graphs.computeGraph, nullptr, 0u, randIndicesRemote, poplar::INT, 0, cache->cacheableSetSize, randomiseIndicesProg, "gen_rand_fetch_indices");
 
-  // Cast the new indices:
-  auto castComputeSet = graphs.ioGraph.addComputeSet("indices_cast_cs");
-  popops::cast(graphs.computeGraph, randIndicesLocal, cache->cacheScatterOffsets, castComputeSet);
-  auto newFetchOffsets = popops::cast(graphs.computeGraph, randIndicesRemote, poplar::UNSIGNED_INT, castComputeSet, "cast_");
-  randomiseIndicesProg.add(Execute(castComputeSet));
-  // Add a program to copy the remote fetch indices from the compute tiles back to the IO tiles:
-  randomiseIndicesProg.add(Copy(newFetchOffsets, cache->remoteFetchOffsets, "exchange_new_fetch_offsets"));
+  // // Cast the new indices:
+  // auto castComputeSet = graphs.ioGraph.addComputeSet("indices_cast_cs");
+  // popops::cast(graphs.computeGraph, randIndicesLocal, cache->cacheScatterOffsets, castComputeSet);
+  // auto newFetchOffsets = popops::cast(graphs.computeGraph, randIndicesRemote, poplar::UNSIGNED_INT, castComputeSet, "compute_tile_fetch_offsets");
+  // randomiseIndicesProg.add(Execute(castComputeSet));
+  // // Add a program to copy the remote fetch indices from the compute tiles back to the IO tiles:
+  // randomiseIndicesProg.add(Copy(newFetchOffsets, cache->remoteFetchOffsets, "exchange_new_fetch_offsets"));
 
-  // Create the asynchronous I/O pipeline:
+  // Make a program to increment all indices by 1:
+  Sequence updateIndicesProg;
+  auto remoteBufferNewIndices = graphs.computeGraph.addVariable(poplar::UNSIGNED_INT, cache->remoteFetchOffsets.shape(), "compute_tile_fetch_offsets");
+  poputil::mapTensorLinearly(graphs.computeGraph, remoteBufferNewIndices);
+  popops::addInPlace(graphs.computeGraph, cache->cacheScatterOffsets, 1u, updateIndicesProg, "increment_scatter_indices");
+  popops::addInPlace(graphs.computeGraph, remoteBufferNewIndices, 1u, updateIndicesProg, "increment_fetch_indices");
+  updateIndicesProg.add(Copy(remoteBufferNewIndices, cache->remoteFetchOffsets, "copy_updated_rb_offsets_to_io_tiles"));
+
+  // Create the asynchronous I/O pipeline. The efficiency of the IO
+  // overlap is very sensitive to the order of programs here.
+  // Disrupting the I/O overlap can reduce external memory bandwidth
+  // utilisation by 20%.
+
+  // Describe pipeline main loop first:
   auto mainSequence = Sequence {
-    cache->updateResidentSetProg,
-    cache->readMemoryProg,
-    cache->cacheExchangeProg,
-    randomiseIndicesProg,
+    cache->updateResidentSetProg, // Scatter the data fetched from remote buffer across compute tiles. TODO: The first scatter should be skipped
+    // ... Here we would insert a program to do some processing with resident set ...
+    cache->readMemoryProg, // I/O tiles read from remote buffer using new indices
+    cache->cacheExchangeProg, // Copy data fetched from remote buffer onto compute tiles
+    updateIndicesProg, // After processing we may know which remote buffer indices are required next so can update
   };
 
+  // Whole I/O pipeline including start up:
   auto pipeline = Sequence {
-    randomiseIndicesProg,
-    cache->readMemoryProg,
-    cache->cacheExchangeProg,
-    Repeat(iterations - 1, mainSequence),
-    cache->updateResidentSetProg
+    // ... Program start: we can assume that the resident set has been primed by
+    // the host so that we can immediately do some processing on the resident set ...
+    Copy(cache->remoteFetchOffsets, remoteBufferNewIndices, "sync_compute_tile_offsets"), // Initial sync of the compute tile's duplicate fetch offsets
+    updateIndicesProg, // Use results of processing to decide what to fetch into cache next...
+    Repeat(iterations, mainSequence), // Enter the main loop
   };
 
   // Register programs:
@@ -114,7 +131,7 @@ void SoftwareCacheBenchmark::execute(poplar::Engine& engine, const poplar::Devic
   std::vector<std::int32_t> featureVector(lineSize, 0);
   for (std::size_t i = 0; i < cache->cacheableSetSize; ++i) {
     std::fill(featureVector.begin(), featureVector.end(), i);
-    engine.copyToRemoteBuffer(featureVector.data(), cache->getRemoteBufferName(), i);
+    engine.copyToRemoteBuffer(featureVector.data(), cache->getRemoteBufferName(), i, 0u);
   }
   auto fillEndTime = std::chrono::steady_clock::now();
   auto seconds = std::chrono::duration<double>(fillEndTime - fillStartTime).count();
@@ -126,15 +143,15 @@ void SoftwareCacheBenchmark::execute(poplar::Engine& engine, const poplar::Devic
   // random set of random indices to fetch:
   std::vector<std::uint32_t> remoteBufferIndices(cacheableSetSize);
   std::mt19937 g(seed);
-  std::iota(remoteBufferIndices.begin(), remoteBufferIndices.end(), 0);
-  std::shuffle(remoteBufferIndices.begin(), remoteBufferIndices.end(), g);
+  std::iota(remoteBufferIndices.begin(), remoteBufferIndices.end(), 100);
+  //std::shuffle(remoteBufferIndices.begin(), remoteBufferIndices.end(), g);
   remoteBufferIndices.resize(fetchCount);
 
   // List of locations in the cache for the fetched lines. Again use a random
   // permutation:
   std::vector<std::uint32_t> cacheDestinationIndices(residentSetSize);
   std::iota(cacheDestinationIndices.begin(), cacheDestinationIndices.end(), 0);
-  std::shuffle(cacheDestinationIndices.begin(), cacheDestinationIndices.end(), g);
+  //std::shuffle(cacheDestinationIndices.begin(), cacheDestinationIndices.end(), g);
   cacheDestinationIndices.resize(fetchCount);
 
   if (remoteBufferIndices.size() < 10) {
