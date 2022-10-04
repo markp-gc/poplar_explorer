@@ -88,29 +88,37 @@ void SoftwareCacheBenchmark::build(poplar::Graph& graph, const poplar::Target&) 
   poputil::mapTensorLinearly(graphs.computeGraph, remoteBufferNewIndices);
   popops::addInPlace(graphs.computeGraph, cache->cacheScatterOffsets, 1u, updateIndicesProg, "increment_scatter_indices");
   popops::addInPlace(graphs.computeGraph, remoteBufferNewIndices, 1u, updateIndicesProg, "increment_fetch_indices");
-  updateIndicesProg.add(Copy(remoteBufferNewIndices, cache->remoteFetchOffsets, "copy_updated_rb_offsets_to_io_tiles"));
+
+  // Programs to exchange offsets between compute and I/O tiles:
+  auto receiveOffsetsFromIOTiles = Copy(cache->remoteFetchOffsets, remoteBufferNewIndices);
+  auto sendFetchOffsetsToIOTiles = Copy(remoteBufferNewIndices, cache->remoteFetchOffsets);
 
   // Create the asynchronous I/O pipeline. The efficiency of the IO
   // overlap is very sensitive to the order of programs here.
   // Disrupting the I/O overlap can reduce external memory bandwidth
   // utilisation by 20%.
 
+  // Here we would insert a program to process the on-chip data on the compute tiles.
+  // At the moment it is just an empty program:
+  Sequence doProcessing;
+
   // Describe pipeline main loop first:
   auto mainSequence = Sequence {
+    updateIndicesProg, // After processing we may know which remote buffer indices are required next so can update
+    sendFetchOffsetsToIOTiles,
     cache->updateResidentSetProg, // Scatter the data fetched from remote buffer across compute tiles. TODO: The first scatter should be skipped
-    // ... Here we would insert a program to do some processing with resident set ...
+    doProcessing,
     cache->readMemoryProg, // I/O tiles read from remote buffer using new indices
     cache->cacheExchangeProg, // Copy data fetched from remote buffer onto compute tiles
-    updateIndicesProg, // After processing we may know which remote buffer indices are required next so can update
   };
 
   // Whole I/O pipeline including start up:
   auto pipeline = Sequence {
-    // ... Program start: we can assume that the resident set has been primed by
-    // the host so that we can immediately do some processing on the resident set ...
-    Copy(cache->remoteFetchOffsets, remoteBufferNewIndices, "sync_compute_tile_offsets"), // Initial sync of the compute tile's duplicate fetch offsets
-    updateIndicesProg, // Use results of processing to decide what to fetch into cache next...
-    Repeat(iterations, mainSequence), // Enter the main loop
+    receiveOffsetsFromIOTiles, // Only need to do this once at the start
+    doProcessing,
+    cache->readMemoryProg, // I/O tiles read from remote buffer using new indices
+    cache->cacheExchangeProg, // Copy data fetched from remote buffer onto compute tiles
+    Repeat(iterations - 1, mainSequence), // Enter the main loop
   };
 
   // Register programs:
