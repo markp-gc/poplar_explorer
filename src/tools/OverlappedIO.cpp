@@ -75,7 +75,7 @@ void OverlappedIO::init(const boost::program_options::variables_map& args) {}
 
 void OverlappedIO::build(poplar::Graph& graph, const poplar::Target& target) {
   popops::addCodelets(graph);
-  graph.addCodelets("../src/codelets/simple.cpp");
+  graph.addCodelets("../src/codelets/OverlappedIO/simple.cpp");
 
   // Get two disjoint sets of tiles to use for compute and IO:
   const auto numTotalTiles = target.getNumTiles();

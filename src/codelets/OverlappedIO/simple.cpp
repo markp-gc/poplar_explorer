@@ -1,5 +1,4 @@
 #include <poplar/Vertex.hpp>
-#include <algorithm>
 
 class ComputeVertex : public poplar::Vertex {
 public:
