@@ -1,5 +1,6 @@
 #include <poplar/Vertex.hpp>
 #include <print.h>
+#include <poplar/StackSizeDefs.hpp>
 
 #ifdef __IPU__
 #include <ipu_vector_math>
@@ -44,7 +45,7 @@ public:
 class Transform4x4_intrinsics : public poplar::MultiVertex {
 public:
   poplar::Input<poplar::Vector<float, poplar::VectorLayout::SPAN, 8>> matrix;
-  poplar::InOut<poplar::Vector<float,poplar::VectorLayout::SPAN, 8>> vectors;
+  poplar::InOut<poplar::Vector<float, poplar::VectorLayout::SPAN, 8>> vectors;
 
   // This implementation achieves approx 1.03 FLOPs/cycle:
   // E.g. command: './multi-tool AsmVertices --size 8016 --vertex Transform4x4_intrinsics'.
@@ -144,13 +145,13 @@ void scaleAccumulatef32v4(float* s, const float* a, const float* b) {
   )"
   : // outputs
   : "r"(s), "r"(a), "r"(b) // inputs
-  : "$a0:1", "$a2:3", "$a4", "$a6:7"); // clobbered
+  : "memory", "$a0:1", "$a2:3", "$a4", "$a6:7"); // clobbered
 }
 
 class Transform4x4_asm : public poplar::MultiVertex {
 public:
   poplar::Input<poplar::Vector<float, poplar::VectorLayout::SPAN, 8, true>> matrix;
-  poplar::InOut<poplar::Vector<float,poplar::VectorLayout::SPAN, 8, true>> vectors;
+  poplar::InOut<poplar::Vector<float, poplar::VectorLayout::SPAN, 8, true>> vectors;
 
   bool compute(unsigned workerId) {
     // Transpose the 4x4 input matrix so we can use 64-bit loads:
@@ -205,7 +206,7 @@ public:
 class AsmTest : public poplar::Vertex {
 public:
   poplar::Input<poplar::Vector<float, poplar::VectorLayout::SPAN, 8>> matrix;
-  poplar::InOut<poplar::Vector<float,poplar::VectorLayout::SPAN, 8>> vectors;
+  poplar::InOut<poplar::Vector<float, poplar::VectorLayout::SPAN, 8>> vectors;
 
   bool compute() {
     zeroFpAccumulators();
@@ -221,6 +222,115 @@ public:
     : "$a0"); // clobbered
 
     printf("%f %f\n", c[0], c[1]);
+
+    return true;
+  }
+};
+
+#define CCCSLOAD 80
+
+// Template class to calculate register values
+// for common compute state registers:
+template <unsigned N, unsigned M>
+struct CWEI {
+  static constexpr unsigned value = M + (N * 4);
+};
+
+class LoadMatrix : public poplar::SupervisorVertex {
+public:
+  // Specify the alignment and that the matrix must be in interleaved memory:
+  poplar::Input<poplar::Vector<float, poplar::VectorLayout::SPAN, 16, true>> matrix;
+
+  bool compute() __attribute__((target("supervisor"))) {
+
+    // Write the first load address to the $CCCSLOAD register:
+    const auto loadStart = (unsigned)&matrix[0];
+    //printf("Setting CCSLOAD to %x\n", loadStart);
+
+    // Each ld128putcs instruction will read from the load address (which
+    // must be in interleaved memory) and post increment it by 16 bytes.
+
+    // We want to load the 4x4 transform to every 4x4 diagonal block of the 16x16
+    // common compute configuration registers $CWEI_N_M. Register indices are
+    // calculated as index_of($CWEI_n_m) = m + n*4.
+
+    // Load matrix into upper left 4x4:
+    __builtin_ipu_put(loadStart, CCCSLOAD);
+    // Load matrix slice [0, 0:3] to CWEI_0_0 and CWEI_0_1:
+    //printf("Write CWEI reg values: %x and %x\n", CWEI<0, 0>::value, CWEI<0, 0>::value | 1);
+    __builtin_ipu_ld128putcs(CWEI<0, 0>::value);
+    // Load matrix slice [1, 0:3] to CWEI_1_0 and CWEI_1_1:
+    //printf("Write CWEI reg values: %x and %x\n", CWEI<1, 0>::value, CWEI<1, 0>::value | 1);
+    __builtin_ipu_ld128putcs(CWEI<1, 0>::value);
+    // Load matrix slice [2, 0:3] to CWEI_2_0 and CWEI_2_1:
+    //printf("Write CWEI reg values: %x and %x\n", CWEI<2, 0>::value, CWEI<2, 0>::value | 1);
+    __builtin_ipu_ld128putcs(CWEI<2, 0>::value);
+    // Load matrix slice [3, 0:3] to CWEI_3_0 and CWEI_3_1:
+    //printf("Write CWEI reg values: %x and %x\n", CWEI<3, 0>::value, CWEI<3, 0>::value | 1);
+    __builtin_ipu_ld128putcs(CWEI<3, 0>::value);
+
+    // Load matrix into lower right 4x4:
+    __builtin_ipu_put(loadStart, CCCSLOAD);
+    // Load matrix slice [0, 0:3] to CWEI_0_0 and CWEI_0_1:
+    //printf("Write CWEI reg values: %x and %x\n", CWEI<0, 0>::value, CWEI<0, 0>::value | 1);
+    __builtin_ipu_ld128putcs(CWEI<0, 0>::value);
+    // Load matrix slice [1, 0:3] to CWEI_1_0 and CWEI_1_1:
+    //printf("Write CWEI reg values: %x and %x\n", CWEI<1, 0>::value, CWEI<1, 0>::value | 1);
+    __builtin_ipu_ld128putcs(CWEI<1, 0>::value);
+    // Load matrix slice [2, 0:3] to CWEI_2_0 and CWEI_2_1:
+    //printf("Write CWEI reg values: %x and %x\n", CWEI<2, 0>::value, CWEI<2, 0>::value | 1);
+    __builtin_ipu_ld128putcs(CWEI<2, 0>::value);
+    // Load matrix slice [3, 0:3] to CWEI_3_0 and CWEI_3_1:
+    //printf("Write CWEI reg values: %x and %x\n", CWEI<3, 0>::value, CWEI<3, 0>::value | 1);
+    __builtin_ipu_ld128putcs(CWEI<3, 0>::value);
+
+    return true;
+  }
+};
+
+class Transform4x4_amp_basic : public poplar::Vertex {
+public:
+  poplar::Input<poplar::Vector<float, poplar::VectorLayout::SPAN, 16, true>> matrix;
+  poplar::InOut<poplar::Vector<float, poplar::VectorLayout::SPAN, 16, true>> vectors;
+
+  bool compute() {
+    // With f32sisoamp we expect at most a quarter of peak single precision FLOP/sec.
+    // Half perf loss is due to zeros in AMP weights and half again from not using
+    // f32sisov2amp).
+
+    // This is nowhere near optimal use of the AMP but does give correct results
+    // and shows progression of partials through the engines more clearly than
+    // optimised versions:
+    for (int i = 0; i < vectors.size(); i += 4) {
+      zeroFpAccumulators();
+      asm(R"(
+        ld64 $a0:1, %[ptr], $mzero, 0
+        f32sisoamp $azeros, $a0, $azeros, %[TAMP_F32_E4_P0]
+        {
+          ld64 $a0:1, %[ptr], $mzero, 1
+          f32sisoamp $azeros, $a1, $azeros, %[TAMP_F32_E4_P1]
+        }
+        f32sisoamp $azeros, $a0, $azeros, %[TAMP_F32_E4_P2]
+        {
+          ld64 $a0:1, %[ptr], $mzero, 2
+          f32sisoamp $azeros, $a1, $azeros, %[TAMP_F32_E4_P3]
+        }
+        f32sisoamp $a2:3, $a0, $azeros, %[TAMP_F32_E4_P0]
+        {
+          st64 $a2:3, %[ptr], $mzero, 0
+          f32sisoamp $azeros, $azero, $azeros, %[TAMP_F32_E4_P1]
+        }
+        f32sisoamp $a2:3, $azero, $azeros, %[TAMP_F32_E4_P2]
+        st64 $a2:3, %[ptr], $mzero, 1
+      )"
+      : // outputs
+      : [ptr] "r"(&vectors[i]), // inputs
+        [TAMP_F32_E4_P0] "i"(TAMP_F32_E4_P0),
+        [TAMP_F32_E4_P1] "i"(TAMP_F32_E4_P1),
+        [TAMP_F32_E4_P2] "i"(TAMP_F32_E4_P2),
+        [TAMP_F32_E4_P3] "i"(TAMP_F32_E4_P3)
+      : "memory", "$a0:1", "$a2:3"); // clobbered
+    }
 
     return true;
   }

@@ -27,7 +27,7 @@ struct OptimisingVertices :
      "Dimension of vectors in computation.")
     // Value of 'iterations' is stored directly to the 'iterations' member variable:
     ("vertex", po::value<std::string>(&vertexName)->default_value("Transform4x4"),
-     "Name of the transform vertex to use [Transform4x4, Transform4x4_intrinsics, Transform4x4_asm].")
+     "Name of the transform vertex to use [Transform4x4, Transform4x4_intrinsics, Transform4x4_asm, Transform4x4_amp_basic].")
     ;
   }
 
@@ -45,6 +45,8 @@ struct OptimisingVertices :
       sizeDivisor = 8u;
     } else if (vertexName == "Transform4x4_asm") {
       sizeDivisor = 8u;
+    } else if (vertexName == "Transform4x4_amp_basic") {
+      sizeDivisor = 16u;
     } else {
       std::stringstream ss;
       ss << "Invalid vertex name: '" << vertexName << "'";
@@ -56,7 +58,7 @@ struct OptimisingVertices :
       ss << "Input size must be a multiple of " << sizeDivisor;
       throw std::runtime_error(ss.str());
     } 
-    std::iota(inputData.begin(), inputData.end(), 0.f);
+    std::iota(inputData.begin(), inputData.end(), 1.f);
   }
 
   /// Builder interface:
@@ -75,7 +77,31 @@ struct OptimisingVertices :
       0.f, 0.f, 0.f, 1.f,
       0.f, 0.f, 1.f, 0.f
     };
-    auto tf = graph.addConstant<float>(poplar::FLOAT, {4, 4}, matrix, "transform_matrix");
+    const std::vector<float> ampDebugMatrix = {
+      1.f, 2.f, 3.f, 4.f,
+      5.f, 6.f, 7.f, 8.f,
+      9.f, 10.f, 11.f, 12.f,
+      13.f, 14.f, 15.f, 16.f
+    };
+
+    poplar::Tensor tf;
+
+    poplar::program::Sequence tfProg;
+
+    if (vertexName == "Transform4x4_amp_basic") {
+      tf = graph.addConstant<float>(poplar::FLOAT, {4, 4}, matrix, "transform_matrix");
+
+      // Add supervisor to load the transform matrix into the
+      // accumulatin gmatrix multiply (AMP) unit:
+      auto ampSetupCS = graph.addComputeSet("transform");
+      auto sup = graph.addVertex(ampSetupCS, "LoadMatrix");
+      graph.setTileMapping(sup, 0u);
+      graph.connect(sup["matrix"], tf.flatten());
+      tfProg.add(poplar::program::Execute(ampSetupCS));
+    } else {
+      tf = graph.addConstant<float>(poplar::FLOAT, {4, 4}, matrix, "transform_matrix");
+    }
+
     graph.setTileMapping(tf, 0u);
 
     // Add a program to transform the vectors:
@@ -84,15 +110,13 @@ struct OptimisingVertices :
     graph.setTileMapping(vert, 0u);
     graph.connect(vert["matrix"], tf.flatten());
     graph.connect(vert["vectors"], input.get().flatten());
+    tfProg.add(poplar::program::Execute(tfCs));
 
     // Add data stream connections:
     auto writeDataToIpu = input.buildWrite(graph, false);
     auto readResultFromIpu = input.buildRead(graph, false);
 
-    // Transform the verts:
-    poplar::program::Sequence tfProg = {
-      poplar::program::Execute(tfCs)
-    };
+    // Cycle count around the transformation program:
     cycleCount = poplar::cycleCount(graph, tfProg, 0u, poplar::SyncType::INTERNAL, "count_cycles");
 
     // Construct the program sequence:
