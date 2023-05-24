@@ -272,7 +272,7 @@ public:
 // Accumulating Matrix Product (AMP) engine.
 // =========================================
 //
-// A matrix-vector product can be interpretted as taking a linear combination of the columns of
+// A matrix-vector product can be interpreted as taking a linear combination of the columns of
 // the matrix. I.e. a matrix projects a vector into its "column space": the vector space spanned
 // by its columns. This is exactly how the AMP engine works: it is a "column scaling" engine.
 //
@@ -285,8 +285,8 @@ public:
 // engines. These connections are made such that each engine in a phase is responsible for scaling
 // a part of the column of the weight matrix and accumulating the result to the accumulators. So
 // each phase scales and accumulates one column from the weight matrix. Once all phases are complete
-// the results are ready, but can only be extracted from the pipeline two elements at a time on even
-// phases.
+// the results are ready, but can only be extracted from the pipeline two elements at a time (and
+// only on even phases for f32sisoamp).
 //
 // Additionally the amp instruction can take a partial result which is also added to the scaled
 // column. This allows executing larger matrix multiples by decomposing them into smaller blocks:
