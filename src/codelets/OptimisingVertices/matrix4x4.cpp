@@ -245,86 +245,100 @@ public:
 
     // Write the first load address to the $CCCSLOAD register:
     const auto loadStart = (unsigned)&matrix[0];
-    //printf("Setting CCSLOAD to %x\n", loadStart);
 
-    // Each ld128putcs instruction will read from the load address (which
-    // must be in interleaved memory) and post increment it by 16 bytes.
-
-    // We want to load the 4x4 transform to every 4x4 diagonal block of the 16x16
+    // We want to load the 4x4 transform to upper left 4x4 block of the 16x16
     // common compute configuration registers $CWEI_N_M. Register indices are
     // calculated as index_of($CWEI_n_m) = m + n*4.
 
-    // Load matrix into upper left 4x4:
+    // Each ld128putcs instruction will read from the load address ($CCCSLOAD),
+    // which must be in interleaved memory, and post increment it by 16 bytes:
     __builtin_ipu_put(loadStart, CCCSLOAD);
     // Load matrix slice [0, 0:3] to CWEI_0_0 and CWEI_0_1:
-    //printf("Write CWEI reg values: %x and %x\n", CWEI<0, 0>::value, CWEI<0, 0>::value | 1);
     __builtin_ipu_ld128putcs(CWEI<0, 0>::value);
     // Load matrix slice [1, 0:3] to CWEI_1_0 and CWEI_1_1:
-    //printf("Write CWEI reg values: %x and %x\n", CWEI<1, 0>::value, CWEI<1, 0>::value | 1);
     __builtin_ipu_ld128putcs(CWEI<1, 0>::value);
     // Load matrix slice [2, 0:3] to CWEI_2_0 and CWEI_2_1:
-    //printf("Write CWEI reg values: %x and %x\n", CWEI<2, 0>::value, CWEI<2, 0>::value | 1);
     __builtin_ipu_ld128putcs(CWEI<2, 0>::value);
     // Load matrix slice [3, 0:3] to CWEI_3_0 and CWEI_3_1:
-    //printf("Write CWEI reg values: %x and %x\n", CWEI<3, 0>::value, CWEI<3, 0>::value | 1);
-    __builtin_ipu_ld128putcs(CWEI<3, 0>::value);
-
-    // Load matrix into lower right 4x4:
-    __builtin_ipu_put(loadStart, CCCSLOAD);
-    // Load matrix slice [0, 0:3] to CWEI_0_0 and CWEI_0_1:
-    //printf("Write CWEI reg values: %x and %x\n", CWEI<0, 0>::value, CWEI<0, 0>::value | 1);
-    __builtin_ipu_ld128putcs(CWEI<0, 0>::value);
-    // Load matrix slice [1, 0:3] to CWEI_1_0 and CWEI_1_1:
-    //printf("Write CWEI reg values: %x and %x\n", CWEI<1, 0>::value, CWEI<1, 0>::value | 1);
-    __builtin_ipu_ld128putcs(CWEI<1, 0>::value);
-    // Load matrix slice [2, 0:3] to CWEI_2_0 and CWEI_2_1:
-    //printf("Write CWEI reg values: %x and %x\n", CWEI<2, 0>::value, CWEI<2, 0>::value | 1);
-    __builtin_ipu_ld128putcs(CWEI<2, 0>::value);
-    // Load matrix slice [3, 0:3] to CWEI_3_0 and CWEI_3_1:
-    //printf("Write CWEI reg values: %x and %x\n", CWEI<3, 0>::value, CWEI<3, 0>::value | 1);
     __builtin_ipu_ld128putcs(CWEI<3, 0>::value);
 
     return true;
   }
 };
 
-class Transform4x4_amp_basic : public poplar::Vertex {
+// NOTE: This basic AMP vertex is intended to show how the AMP engine's work, not to achieve the
+// peak single precision FLOP rate.
+//
+// Accumulating Matrix Product (AMP) engine.
+// =========================================
+//
+// A matrix-vector product can be interpretted as taking a linear combination of the columns of
+// the matrix. I.e. a matrix projects a vector into its "column space": the vector space spanned
+// by its columns. This is exactly how the AMP engine works: it is a "column scaling" engine.
+//
+// Each amp instruction (f32sisoamp is used here, but there are different variants) takes scalar
+// elements from the input vector one by one and feeds that scalar to every engine. Each engine
+// then multiples the scalar with elements from the weight matrix and passes the intermediate
+// result to the next engine which will add the contribution of the next column to it.
+//
+// Execution is organised into phases. Different phases connect different weights to different
+// engines. These connections are made such that each engine in a phase is responsible for scaling
+// a part of the column of the weight matrix and accumulating the result to the accumulators. So
+// each phase scales and accumulates one column from the weight matrix. Once all phases are complete
+// the results are ready, but can only be extracted from the pipeline two elements at a time on even
+// phases.
+//
+// Additionally the amp instruction can take a partial result which is also added to the scaled
+// column. This allows executing larger matrix multiples by decomposing them into smaller blocks:
+// each block can load a partial result, add to it, and eventually save result back to memory (which
+// can be reloaded again later and so on). In our use case here, we do not need partial inputs so
+// they are always zero. This also enables us to clear the accumulators ready for the next iteration.
+class Transform4x4_amp_basic : public poplar::MultiVertex {
 public:
   poplar::Input<poplar::Vector<float, poplar::VectorLayout::SPAN, 16, true>> matrix;
   poplar::InOut<poplar::Vector<float, poplar::VectorLayout::SPAN, 16, true>> vectors;
 
-  bool compute() {
-    // With f32sisoamp we expect at most a quarter of peak single precision FLOP/sec.
-    // Half perf loss is due to zeros in AMP weights and half again from not using
-    // f32sisov2amp).
+  bool compute(unsigned workerId) {
+    // First we zero all of this worker's accumulation registers (workers share
+    // a weight matrix but have their own accumulators). We do not need to do this
+    // again because in the loop we will insert zeros in the right places as we push
+    // data through the AMP engines.
+    zeroFpAccumulators();
 
-    // This is nowhere near optimal use of the AMP but does give correct results
-    // and shows progression of partials through the engines more clearly than
-    // optimised versions:
-    for (int i = 0; i < vectors.size(); i += 4) {
-      zeroFpAccumulators();
+    // Each iteration of the loop below performs a 4x4 by 4x1 matrix-vector multiply in-place using
+    // the AMP as described above. We have not used the most efficient load store instructions or the
+    // most efficient AMP instruction variant in order to keep the example simple and readable:
+    auto startIndex = 4 * workerId;
+    for (auto v = startIndex; v < vectors.size(); v += 4 * numWorkers()) {
       asm(R"(
+      # Load the first two scalars from the 4D input vector:
         ld64 $a0:1, %[ptr], $mzero, 0
+      # Execute phase 0. Input partials are zero and we discard the result:
         f32sisoamp $azeros, $a0, $azeros, %[TAMP_F32_E4_P0]
+      # Load the second two scalars from 4D input vector in parallel with executing phase 1:
         {
           ld64 $a0:1, %[ptr], $mzero, 1
           f32sisoamp $azeros, $a1, $azeros, %[TAMP_F32_E4_P1]
         }
+      # Proceed through the remaining phases (only 4 engines are enabled):
         f32sisoamp $azeros, $a0, $azeros, %[TAMP_F32_E4_P2]
-        {
-          ld64 $a0:1, %[ptr], $mzero, 2
-          f32sisoamp $azeros, $a1, $azeros, %[TAMP_F32_E4_P3]
-        }
-        f32sisoamp $a2:3, $a0, $azeros, %[TAMP_F32_E4_P0]
+        f32sisoamp $azeros, $a1, $azeros, %[TAMP_F32_E4_P3]
+      # The results are ready. Save the first two elements of the output vector in the ARF:
+        f32sisoamp $a2:3, $azero, $azeros, %[TAMP_F32_E4_P0]
+      # Phase 0 is special: it has moved the next part of the result into the output pipeline.
+      # To get the next elements of the result we need to flush it through the pipeline.
+      # Simultaneously save the first two elements (over writing the input) and executing phase 1 again:
         {
           st64 $a2:3, %[ptr], $mzero, 0
           f32sisoamp $azeros, $azero, $azeros, %[TAMP_F32_E4_P1]
         }
+      # Executing phase 2 again clears the pipeline so we can save to ARF again:
         f32sisoamp $a2:3, $azero, $azeros, %[TAMP_F32_E4_P2]
+      # Then write the last elements of the result to memory:
         st64 $a2:3, %[ptr], $mzero, 1
       )"
       : // outputs
-      : [ptr] "r"(&vectors[i]), // inputs
+      : [ptr] "r"(&vectors[v]), // inputs
         [TAMP_F32_E4_P0] "i"(TAMP_F32_E4_P0),
         [TAMP_F32_E4_P1] "i"(TAMP_F32_E4_P1),
         [TAMP_F32_E4_P2] "i"(TAMP_F32_E4_P2),
