@@ -262,6 +262,18 @@ public:
     // Load matrix slice [3, 0:3] to CWEI_3_0 and CWEI_3_1:
     __builtin_ipu_ld128putcs(CWEI<3, 0>::value);
 
+    // Load the same 4x4 matrix into the lower right hand corner of weight matrix:
+
+    __builtin_ipu_put(loadStart, CCCSLOAD);
+    // Load matrix slice [0, 0:3] to CWEI_4_2 and CWEI_4_3:
+    __builtin_ipu_ld128putcs(CWEI<4, 2>::value);
+    // Load matrix slice [1, 0:3] to CWEI_5_2 and CWEI_5_3:
+    __builtin_ipu_ld128putcs(CWEI<5, 2>::value);
+    // Load matrix slice [2, 0:3] to CWEI_6_2 and CWEI_6_3:
+    __builtin_ipu_ld128putcs(CWEI<6, 2>::value);
+    // Load matrix slice [3, 0:3] to CWEI_7_2 and CWEI_7_3:
+    __builtin_ipu_ld128putcs(CWEI<7, 2>::value);
+
     return true;
   }
 };
@@ -343,6 +355,75 @@ public:
         [TAMP_F32_E4_P1] "i"(TAMP_F32_E4_P1),
         [TAMP_F32_E4_P2] "i"(TAMP_F32_E4_P2),
         [TAMP_F32_E4_P3] "i"(TAMP_F32_E4_P3)
+      : "memory", "$a0:1", "$a2:3"); // clobbered
+    }
+
+    return true;
+  }
+};
+
+class Transform4x4_amp_8_engines : public poplar::MultiVertex {
+public:
+  poplar::Input<poplar::Vector<float, poplar::VectorLayout::SPAN, 16, true>> matrix;
+  poplar::InOut<poplar::Vector<float, poplar::VectorLayout::SPAN, 16, true>> vectors;
+
+  bool compute(unsigned workerId) {
+    // First we zero all of this worker's accumulation registers (workers share
+    // a weight matrix but have their own accumulators). We do not need to do this
+    // again because in the loop we will insert zeros in the right places as we push
+    // data through the AMP engines.
+    zeroFpAccumulators();
+
+    auto startIndex = 8 * workerId;
+    for (auto v = startIndex; v < vectors.size(); v += 8 * numWorkers()) {
+      asm(R"(
+        ld64 $a0:1, %[ptr], $mzero, 0
+        f32sisoamp $azeros, $a0, $azeros, %[TAMP_F32_E4_P0]
+        {
+          ld64 $a0:1, %[ptr], $mzero, 1
+          f32sisoamp $azeros, $a1, $azeros, %[TAMP_F32_E4_P1]
+        }
+        f32sisoamp $azeros, $a0, $azeros, %[TAMP_F32_E4_P2]
+        {
+          ld64 $a0:1, %[ptr], $mzero, 2
+          f32sisoamp $azeros, $a1, $azeros, %[TAMP_F32_E4_P3]
+        }
+        f32sisoamp $azeros, $a0, $azeros, %[TAMP_F32_E4_P4]
+        {
+          ld64 $a0:1, %[ptr], $mzero, 3
+          f32sisoamp $azeros, $a1, $azeros, %[TAMP_F32_E4_P5]
+        }
+        f32sisoamp $azeros, $a0, $azeros, %[TAMP_F32_E4_P6]
+        f32sisoamp $azeros, $a1, $azeros, %[TAMP_F32_E4_P7]
+
+        f32sisoamp $a2:3, $azero, $azeros, %[TAMP_F32_E4_P0]
+        {
+          st64 $a2:3, %[ptr], $mzero, 0
+          f32sisoamp $azeros, $azero, $azeros, %[TAMP_F32_E4_P1]
+        }
+        f32sisoamp $a2:3, $azero, $azeros, %[TAMP_F32_E4_P2]
+        {
+          st64 $a2:3, %[ptr], $mzero, 1
+          f32sisoamp $azeros, $azero, $azeros, %[TAMP_F32_E4_P3]
+        }
+        f32sisoamp $a2:3, $azero, $azeros, %[TAMP_F32_E4_P4]
+        {
+          st64 $a2:3, %[ptr], $mzero, 2
+          f32sisoamp $azeros, $azero, $azeros, %[TAMP_F32_E4_P5]
+        }
+        f32sisoamp $a2:3, $azero, $azeros, %[TAMP_F32_E4_P6]
+        st64 $a2:3, %[ptr], $mzero, 3
+      )"
+      : // outputs
+      : [ptr] "r"(&vectors[v]), // inputs
+        [TAMP_F32_E4_P0] "i"(TAMP_F32_E4_P0),
+        [TAMP_F32_E4_P1] "i"(TAMP_F32_E4_P1),
+        [TAMP_F32_E4_P2] "i"(TAMP_F32_E4_P2),
+        [TAMP_F32_E4_P3] "i"(TAMP_F32_E4_P3),
+        [TAMP_F32_E4_P4] "i"(TAMP_F32_E4_P4),
+        [TAMP_F32_E4_P5] "i"(TAMP_F32_E4_P5),
+        [TAMP_F32_E4_P6] "i"(TAMP_F32_E4_P6),
+        [TAMP_F32_E4_P7] "i"(TAMP_F32_E4_P7)
       : "memory", "$a0:1", "$a2:3"); // clobbered
     }
 

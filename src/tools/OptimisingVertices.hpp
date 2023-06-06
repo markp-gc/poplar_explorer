@@ -14,7 +14,7 @@
 struct OptimisingVertices :
   public ipu_utils::BuilderInterface, public ToolInterface
 {
-  OptimisingVertices() : input("input"), cycleCount("cycles") {}
+  OptimisingVertices() : input("input"), cycleCount("cycles"), vertexUsesAmp(false) {}
   virtual ~OptimisingVertices() {}
 
   /// Tool interface:
@@ -27,7 +27,7 @@ struct OptimisingVertices :
      "Dimension of vectors in computation.")
     // Value of 'iterations' is stored directly to the 'iterations' member variable:
     ("vertex", po::value<std::string>(&vertexName)->default_value("Transform4x4"),
-     "Name of the transform vertex to use [Transform4x4, Transform4x4_intrinsics, Transform4x4_asm, Transform4x4_amp_basic].")
+     "Name of the transform vertex to use [Transform4x4, Transform4x4_intrinsics, Transform4x4_asm, Transform4x4_amp_basic, Transform4x4_amp_8_engines].")
     ;
   }
 
@@ -38,6 +38,8 @@ struct OptimisingVertices :
       throw std::runtime_error("IPU Model does not support IPU intrinsics or ASM.");
     }
 
+    vertexUsesAmp = vertexName.find("Transform4x4_amp_") != std::string::npos;
+
     auto sizeDivisor = 0u;
     if (vertexName == "Transform4x4" || vertexName == "AsmTest") {
       sizeDivisor = 4u;
@@ -45,7 +47,7 @@ struct OptimisingVertices :
       sizeDivisor = 8u;
     } else if (vertexName == "Transform4x4_asm") {
       sizeDivisor = 8u;
-    } else if (vertexName == "Transform4x4_amp_basic") {
+    } else if (vertexUsesAmp) {
       sizeDivisor = 16u;
     } else {
       std::stringstream ss;
@@ -62,9 +64,8 @@ struct OptimisingVertices :
   }
 
   /// Builder interface:
-
   void build(poplar::Graph& graph, const poplar::Target& target) override {
-    graph.addCodelets("../src/codelets/OptimisingVertices/matrix4x4.cpp");
+    graph.addCodelets("../src/codelets/OptimisingVertices/matrix4x4.cpp", poplar::CodeletFileType::Auto, "-O3");
 
     // Add input vector var:
     input = graph.addVariable(poplar::FLOAT, {inputData.size()}, "vectors");
@@ -88,11 +89,11 @@ struct OptimisingVertices :
 
     poplar::program::Sequence tfProg;
 
-    if (vertexName == "Transform4x4_amp_basic") {
+    if (vertexUsesAmp) {
       tf = graph.addConstant<float>(poplar::FLOAT, {4, 4}, matrix, "transform_matrix");
 
       // Add supervisor to load the transform matrix into the
-      // accumulatin gmatrix multiply (AMP) unit:
+      // accumulating matrix multiply (AMP) unit:
       auto ampSetupCS = graph.addComputeSet("transform");
       auto sup = graph.addVertex(ampSetupCS, "LoadMatrix");
       graph.setTileMapping(sup, 0u);
@@ -174,4 +175,5 @@ struct OptimisingVertices :
   ipu_utils::StreamableTensor cycleCount;
   std::vector<float> inputData;
   std::string vertexName;
+  bool vertexUsesAmp;
 };
