@@ -109,7 +109,9 @@ struct OptimisingVertices :
     auto tfCs = graph.addComputeSet("transform");
     auto vert = graph.addVertex(tfCs, vertexName);
     graph.setTileMapping(vert, 0u);
-    graph.connect(vert["matrix"], tf.flatten());
+    if (!vertexUsesAmp) {
+      graph.connect(vert["matrix"], tf.flatten());
+    }
     graph.connect(vert["vectors"], input.get().flatten());
     tfProg.add(poplar::program::Execute(tfCs));
 

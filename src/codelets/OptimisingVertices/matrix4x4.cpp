@@ -305,9 +305,10 @@ public:
 // each block can load a partial result, add to it, and eventually save result back to memory (which
 // can be reloaded again later and so on). In our use case here, we do not need partial inputs so
 // they are always zero. This also enables us to clear the accumulators ready for the next iteration.
+// However, this does mean that the available FLOPS relating to partials are not utilised, so we can not
+// expect to reach the peak FLOP rate where the calculation does not actively load partials.
 class Transform4x4_amp_basic : public poplar::MultiVertex {
 public:
-  poplar::Input<poplar::Vector<float, poplar::VectorLayout::SPAN, 16, true>> matrix;
   poplar::InOut<poplar::Vector<float, poplar::VectorLayout::SPAN, 16, true>> vectors;
 
   bool compute(unsigned workerId) {
@@ -364,7 +365,6 @@ public:
 
 class Transform4x4_amp_8_engines : public poplar::MultiVertex {
 public:
-  poplar::Input<poplar::Vector<float, poplar::VectorLayout::SPAN, 16, true>> matrix;
   poplar::InOut<poplar::Vector<float, poplar::VectorLayout::SPAN, 16, true>> vectors;
 
   bool compute(unsigned workerId) {
@@ -374,58 +374,79 @@ public:
     // data through the AMP engines.
     zeroFpAccumulators();
 
-    auto startIndex = 8 * workerId;
-    for (auto v = startIndex; v < vectors.size(); v += 8 * numWorkers()) {
-      asm(R"(
-        ld64 $a0:1, %[ptr], $mzero, 0
-        f32sisoamp $azeros, $a0, $azeros, %[TAMP_F32_E4_P0]
-        {
-          ld64 $a0:1, %[ptr], $mzero, 1
-          f32sisoamp $azeros, $a1, $azeros, %[TAMP_F32_E4_P1]
-        }
-        f32sisoamp $azeros, $a0, $azeros, %[TAMP_F32_E4_P2]
-        {
-          ld64 $a0:1, %[ptr], $mzero, 2
-          f32sisoamp $azeros, $a1, $azeros, %[TAMP_F32_E4_P3]
-        }
-        f32sisoamp $azeros, $a0, $azeros, %[TAMP_F32_E4_P4]
-        {
-          ld64 $a0:1, %[ptr], $mzero, 3
-          f32sisoamp $azeros, $a1, $azeros, %[TAMP_F32_E4_P5]
-        }
-        f32sisoamp $azeros, $a0, $azeros, %[TAMP_F32_E4_P6]
-        f32sisoamp $azeros, $a1, $azeros, %[TAMP_F32_E4_P7]
+    const unsigned startIndex = 8 * workerId;
+    constexpr unsigned stride = 8 * numWorkers();
+    constexpr unsigned step = 4 * numWorkers() - 3;
+    float* srcPtr = &vectors[startIndex];
 
-        f32sisoamp $a2:3, $azero, $azeros, %[TAMP_F32_E4_P0]
-        {
-          st64 $a2:3, %[ptr], $mzero, 0
-          f32sisoamp $azeros, $azero, $azeros, %[TAMP_F32_E4_P1]
-        }
-        f32sisoamp $a2:3, $azero, $azeros, %[TAMP_F32_E4_P2]
-        {
-          st64 $a2:3, %[ptr], $mzero, 1
-          f32sisoamp $azeros, $azero, $azeros, %[TAMP_F32_E4_P3]
-        }
-        f32sisoamp $a2:3, $azero, $azeros, %[TAMP_F32_E4_P4]
-        {
-          st64 $a2:3, %[ptr], $mzero, 2
-          f32sisoamp $azeros, $azero, $azeros, %[TAMP_F32_E4_P5]
-        }
+    // In the ASM loop we repeatedly subtract stride from 'span' and when it
+    // is less than zero the worker is done. Without coding the loop in ASM
+    // the compiler will try to be clever and divide this by the stride and
+    // then use brnzdec. However, that saves no instructions in the loop as
+    // we can dual issue the comparison and it leads to a large preamble to
+    // divide by the stride increasing the code size.
+    int span = vectors.size() - startIndex;
+
+    asm (R"(
+      LOOP_START:
+      ld64step $a0:1, $mzero, %[ptr]+=, 1
+      {
+        sub %[span], %[span], %[stride]
+        f32sisoamp $azeros, $a0, $azeros, %[TAMP_F32_E4_P0]
+      }
+      {
+        ld64step $a0:1, $mzero, %[ptr]+=, 1
+        f32sisoamp $azeros, $a1, $azeros, %[TAMP_F32_E4_P1]
+      }
+      f32sisoamp $azeros, $a0, $azeros, %[TAMP_F32_E4_P2]
+      {
+        ld64step $a0:1, $mzero, %[ptr]+=, 1
+        f32sisoamp $azeros, $a1, $azeros, %[TAMP_F32_E4_P3]
+      }
+      f32sisoamp $azeros, $a0, $azeros, %[TAMP_F32_E4_P4]
+      {
+        ld64step $a0:1, $mzero, %[ptr]+=, -3
+        f32sisoamp $azeros, $a1, $azeros, %[TAMP_F32_E4_P5]
+      }
+      f32sisoamp $azeros, $a0, $azeros, %[TAMP_F32_E4_P6]
+      f32sisoamp $azeros, $a1, $azeros, %[TAMP_F32_E4_P7]
+
+      f32sisoamp $a2:3, $azero, $azeros, %[TAMP_F32_E4_P0]
+      {
+        st64step $a2:3, $mzero, %[ptr]+=, 1
+        f32sisoamp $azeros, $azero, $azeros, %[TAMP_F32_E4_P1]
+      }
+      f32sisoamp $a2:3, $azero, $azeros, %[TAMP_F32_E4_P2]
+      {
+        st64step $a2:3, $mzero, %[ptr]+=, 1
+        f32sisoamp $azeros, $azero, $azeros, %[TAMP_F32_E4_P3]
+      }
+      f32sisoamp $a2:3, $azero, $azeros, %[TAMP_F32_E4_P4]
+      {
+        st64step $a2:3, $mzero, %[ptr]+=, 1
+        f32sisoamp $azeros, $azero, $azeros, %[TAMP_F32_E4_P5]
+      }
+      {
+        cmpslt $m0, %[span], 0
         f32sisoamp $a2:3, $azero, $azeros, %[TAMP_F32_E4_P6]
-        st64 $a2:3, %[ptr], $mzero, 3
-      )"
-      : // outputs
-      : [ptr] "r"(&vectors[v]), // inputs
-        [TAMP_F32_E4_P0] "i"(TAMP_F32_E4_P0),
-        [TAMP_F32_E4_P1] "i"(TAMP_F32_E4_P1),
-        [TAMP_F32_E4_P2] "i"(TAMP_F32_E4_P2),
-        [TAMP_F32_E4_P3] "i"(TAMP_F32_E4_P3),
-        [TAMP_F32_E4_P4] "i"(TAMP_F32_E4_P4),
-        [TAMP_F32_E4_P5] "i"(TAMP_F32_E4_P5),
-        [TAMP_F32_E4_P6] "i"(TAMP_F32_E4_P6),
-        [TAMP_F32_E4_P7] "i"(TAMP_F32_E4_P7)
-      : "memory", "$a0:1", "$a2:3"); // clobbered
-    }
+      }
+      st64step $a2:3, $mzero, %[ptr]+=, %[step]
+      brz $m0, LOOP_START
+    )"
+    : // outputs
+    : [ptr] "r"(srcPtr), // inputs
+      [step] "r"(step),
+      [span] "r"(span),
+      [stride] "r"(stride),
+      [TAMP_F32_E4_P0] "i"(TAMP_F32_E4_P0),
+      [TAMP_F32_E4_P1] "i"(TAMP_F32_E4_P1),
+      [TAMP_F32_E4_P2] "i"(TAMP_F32_E4_P2),
+      [TAMP_F32_E4_P3] "i"(TAMP_F32_E4_P3),
+      [TAMP_F32_E4_P4] "i"(TAMP_F32_E4_P4),
+      [TAMP_F32_E4_P5] "i"(TAMP_F32_E4_P5),
+      [TAMP_F32_E4_P6] "i"(TAMP_F32_E4_P6),
+      [TAMP_F32_E4_P7] "i"(TAMP_F32_E4_P7)
+    : "memory", "$m0", "$a0:1", "$a2:3"); // clobbered
 
     return true;
   }
