@@ -34,7 +34,7 @@ std::ostream& operator << (std::ostream& s, const std::vector<std::vector<T>>& v
 }
 
 inline
-void logTensorInfo(poplar::Graph& g, poplar::Tensor t) {
+std::size_t logTensorInfo(poplar::Graph& g, poplar::Tensor t) {
   ipu_utils::logger()->info("Shape: {}", t.shape());
   ipu_utils::logger()->info("Total elements: {}", t.numElements());
   ipu_utils::logger()->info("Innermost grouping: {}", poputil::detectInnermostGrouping(g, t));
@@ -45,4 +45,5 @@ void logTensorInfo(poplar::Graph& g, poplar::Tensor t) {
     if (!v.empty()) { tilesUsed += 1; }
   }
   ipu_utils::logger()->info("Tiles used: {}", tilesUsed);
+  return tilesUsed;
 }

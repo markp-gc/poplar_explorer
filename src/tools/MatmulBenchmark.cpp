@@ -6,12 +6,15 @@
 #include <popops/codelets.hpp>
 #include <poplin/codelets.hpp>
 #include <poplin/MatMul.hpp>
+#include <poplar/CycleCount.hpp>
 
 MatmulBenchmark::MatmulBenchmark()
 :
   lhsMatrices("input_lhs"),
   rhsMatrices("input_rhs"),
-  results("results")
+  results("results"),
+  cycleCount("cycles"),
+  tilesUsed(0u)
 {}
 
 MatmulBenchmark::~MatmulBenchmark() {}
@@ -23,7 +26,13 @@ void MatmulBenchmark::build(poplar::Graph& g, const poplar::Target&) {
   poplin::addCodelets(g);
 
   poplin::matmul::PlanningCache cache;
-  auto dtype = poplar::HALF;
+  if (dataTypeString == "half") {
+    dtype = poplar::HALF;
+  } else if (dataTypeString == "float") {
+    dtype = poplar::FLOAT;
+  } else {
+    throw std::runtime_error("Unsupported data type.");
+  }
   const std::vector<std::size_t> lhsShape = {lhsRows, lhsCols};
   const std::vector<std::size_t> rhsShape = {lhsCols, rhsCols};
 
@@ -44,16 +53,18 @@ void MatmulBenchmark::build(poplar::Graph& g, const poplar::Target&) {
 
   Sequence matmul;
   auto output = poplin::matMul(g, lhsMatrices, rhsMatrices, matmul, dtype, "results", matmulOptions, &cache);
+  cycleCount = poplar::cycleCount(g, matmul, 0u, poplar::SyncType::INTERNAL, "count_cycles");
   auto repeat_loop = poplar::program::Repeat(iterations, matmul);
 
   Sequence readData;
   results = popops::cast(g, output, poplar::FLOAT, readData);
   readData.add(results.buildRead(g, true));
+  readData.add(cycleCount.buildRead(g, false));
 
   ipu_utils::logger()->info(
     "Matmul shape: ({}) x ({}) = ({})",
     lhsMatrices.shape(), rhsMatrices.shape(), results.shape());
-  logTensorInfo(g, results);
+  tilesUsed = logTensorInfo(g, results);
 
   getPrograms().add("write_data", writeData);
   getPrograms().add("repeat_loop", repeat_loop);
@@ -73,16 +84,25 @@ void MatmulBenchmark::execute(poplar::Engine& engine, const poplar::Device& devi
   std::size_t outputSize = lhsRows * rhsCols;
   std::vector<float> hostResult(outputSize, .1f);
 
-  poplar::copyFloatToDeviceHalf(
-        device.getTarget(), lhsInput.data(),
-        lhsHalfInput.data(), lhsHalfInput.size());
-  poplar::copyFloatToDeviceHalf(
-        device.getTarget(), rhsInput.data(),
-        rhsHalfInput.data(), rhsHalfInput.size());
+  if (dtype == poplar::HALF) {
+    poplar::copyFloatToDeviceHalf(
+          device.getTarget(), lhsInput.data(),
+          lhsHalfInput.data(), lhsHalfInput.size());
+    poplar::copyFloatToDeviceHalf(
+          device.getTarget(), rhsInput.data(),
+          rhsHalfInput.data(), rhsHalfInput.size());
 
-  lhsMatrices.connectWriteStream(engine, lhsHalfInput.data());
-  rhsMatrices.connectWriteStream(engine, rhsHalfInput.data());
+    lhsMatrices.connectWriteStream(engine, lhsHalfInput.data());
+    rhsMatrices.connectWriteStream(engine, rhsHalfInput.data());
+  } else {
+    lhsMatrices.connectWriteStream(engine, lhsInput.data());
+    rhsMatrices.connectWriteStream(engine, rhsInput.data());
+  }
+  
   results.connectReadStream(engine, hostResult.data());
+
+  std::uint64_t cycles = ~0u;
+  cycleCount.connectReadStream(engine, &cycles);
 
   const auto& progs = getPrograms();
   progs.run(engine, "write_data");
@@ -94,11 +114,20 @@ void MatmulBenchmark::execute(poplar::Engine& engine, const poplar::Device& devi
   auto seconds = std::chrono::duration<double>(endTime - startTime).count();
   ipu_utils::logger()->info("Execution time: {}", seconds);
 
-  double tflopsPerIteration = 1e-12 * (lhsRows * lhsCols * rhsCols * 2);
+  progs.run(engine, "read_data");
+
+  double flopsPerIteration = lhsRows * lhsCols * rhsCols * 2;
+  double tflopsPerIteration = 1e-12 * flopsPerIteration;
   double totalTflops = iterations * tflopsPerIteration;
   double tflopsPerSecond = totalTflops / seconds;
-  ipu_utils::logger()->info("TFLOPS/iteration: {}", tflopsPerIteration);
-  ipu_utils::logger()->info("TFLOPS/sec: {}", tflopsPerSecond);
+  double flopsPerCycle = flopsPerIteration / cycles;
+  double clockTHz = device.getTarget().getTileClockFrequency() * 1e-12;
+  ipu_utils::logger()->info("FLOPs/iteration: {}", flopsPerIteration);
+  ipu_utils::logger()->info("Cycles per iteration: {}", cycles);
+  ipu_utils::logger()->info("FLOPS/cycle per tile: {}", flopsPerCycle / tilesUsed);
+  ipu_utils::logger()->info("Clock THz: {}", clockTHz);
+  ipu_utils::logger()->info("TFLOPS/sec from cycles: {}", flopsPerCycle * clockTHz);
+  ipu_utils::logger()->info("TFLOPS/sec measured: {}", tflopsPerSecond);
 }
 
 void MatmulBenchmark::addToolOptions(boost::program_options::options_description& desc) {
@@ -115,6 +144,9 @@ void MatmulBenchmark::addToolOptions(boost::program_options::options_description
   )
   ("iterations", po::value<std::size_t>(&iterations)->default_value(1000),
    "Number of iterations for benchmarking."
+  )
+  ("type", po::value<std::string>(&dataTypeString)->default_value("half"),
+   "Data Type for matrix multiplies."
   )
   ("partials-type", po::value<std::string>(&partialsType)->default_value("half"),
    "Partials type for matrix multiplies."

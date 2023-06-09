@@ -27,9 +27,13 @@ private:
   std::size_t lhsCols;
   std::size_t rhsCols;
   std::size_t iterations;
+  std::string dataTypeString;
   std::string partialsType;
+  poplar::Type dtype;
   float availableMemoryProportion;
   ipu_utils::StreamableTensor lhsMatrices;
   ipu_utils::StreamableTensor rhsMatrices;
   ipu_utils::StreamableTensor results;
+  ipu_utils::StreamableTensor cycleCount;
+  std::size_t tilesUsed;
 };
