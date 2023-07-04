@@ -248,7 +248,7 @@ public:
 
     // We want to load the 4x4 transform to upper left 4x4 block of the 16x16
     // common compute configuration registers $CWEI_N_M. Register indices are
-    // calculated as index_of($CWEI_n_m) = m + n*4.
+    // calculated as index_of($CWEI_n_m) = m + n * 4.
 
     // Each ld128putcs instruction will read from the load address ($CCCSLOAD),
     // which must be in interleaved memory, and post increment it by 16 bytes:
@@ -365,7 +365,7 @@ public:
 
 class Transform4x4_amp_8_engines : public poplar::MultiVertex {
 public:
-  poplar::InOut<poplar::Vector<float, poplar::VectorLayout::SPAN, 16, true>> vectors;
+  poplar::InOut<poplar::Vector<float, poplar::VectorLayout::SPAN, 32, true>> vectors;
 
   bool compute(unsigned workerId) {
     // First we zero all of this worker's accumulation registers (workers share
@@ -377,64 +377,69 @@ public:
     const unsigned startIndex = 8 * workerId;
     constexpr unsigned stride = 8 * numWorkers();
     constexpr unsigned step = 4 * numWorkers() - 3;
-    float* srcPtr = &vectors[startIndex];
+    // To use ldst64pace we need to ensure these pointers go in consecutive addresses:
+    register float* srcPtr asm("$m2") = &vectors[startIndex];
+    register float* dstPtr asm("$m3") = &vectors[startIndex];
 
     // In the ASM loop we repeatedly subtract stride from 'span' and when it
     // is less than zero the worker is done. Without coding the loop in ASM
     // the compiler will try to be clever and divide this by the stride and
     // then use brnzdec. However, that saves no instructions in the loop as
-    // we can dual issue the comparison and it leads to a large preamble to
-    // divide by the stride increasing the code size.
+    // we can dual issue the comparison, where as dividing by the stride
+    // increases the code size due to a large preamble before the loop.
     int span = vectors.size() - startIndex;
 
     asm (R"(
-      LOOP_START:
-      ld64step $a0:1, $mzero, %[ptr]+=, 1
+      ldconst $m6, 1
+      LOOP_START%=:
+      ld64step $a0:1, $mzero, %[loadAddr]+=, 1
       {
         sub %[span], %[span], %[stride]
         f32sisoamp $azeros, $a0, $azeros, %[TAMP_F32_E4_P0]
       }
       {
-        ld64step $a0:1, $mzero, %[ptr]+=, 1
+        ld64step $a0:1, $mzero, %[loadAddr]+=, 1
         f32sisoamp $azeros, $a1, $azeros, %[TAMP_F32_E4_P1]
       }
       f32sisoamp $azeros, $a0, $azeros, %[TAMP_F32_E4_P2]
       {
-        ld64step $a0:1, $mzero, %[ptr]+=, 1
+        ld64step $a0:1, $mzero, %[loadAddr]+=, 1
         f32sisoamp $azeros, $a1, $azeros, %[TAMP_F32_E4_P3]
       }
       f32sisoamp $azeros, $a0, $azeros, %[TAMP_F32_E4_P4]
       {
-        ld64step $a0:1, $mzero, %[ptr]+=, -3
+        ld64step $a0:1, $mzero, %[loadAddr]+=, %[step]
         f32sisoamp $azeros, $a1, $azeros, %[TAMP_F32_E4_P5]
       }
       f32sisoamp $azeros, $a0, $azeros, %[TAMP_F32_E4_P6]
       f32sisoamp $azeros, $a1, $azeros, %[TAMP_F32_E4_P7]
 
       f32sisoamp $a2:3, $azero, $azeros, %[TAMP_F32_E4_P0]
+
       {
-        st64step $a2:3, $mzero, %[ptr]+=, 1
+        st64step $a2:3, $mzero, %[storeAddr]+=, 1
         f32sisoamp $azeros, $azero, $azeros, %[TAMP_F32_E4_P1]
       }
       f32sisoamp $a2:3, $azero, $azeros, %[TAMP_F32_E4_P2]
       {
-        st64step $a2:3, $mzero, %[ptr]+=, 1
+        st64step $a2:3, $mzero, %[storeAddr]+=, 1
         f32sisoamp $azeros, $azero, $azeros, %[TAMP_F32_E4_P3]
       }
       f32sisoamp $a2:3, $azero, $azeros, %[TAMP_F32_E4_P4]
       {
-        st64step $a2:3, $mzero, %[ptr]+=, 1
+        st64step $a2:3, $mzero, %[storeAddr]+=, 1
         f32sisoamp $azeros, $azero, $azeros, %[TAMP_F32_E4_P5]
       }
       {
         cmpslt $m0, %[span], 0
         f32sisoamp $a2:3, $azero, $azeros, %[TAMP_F32_E4_P6]
       }
-      st64step $a2:3, $mzero, %[ptr]+=, %[step]
-      brz $m0, LOOP_START
+      st64step $a2:3, $mzero, %[storeAddr]+=, %[step]
+      brz $m0, LOOP_START%=
     )"
     : // outputs
-    : [ptr] "r"(srcPtr), // inputs
+    : [loadAddr] "r"(srcPtr), // inputs
+      [storeAddr] "r"(dstPtr), // inputs
       [step] "r"(step),
       [span] "r"(span),
       [stride] "r"(stride),
@@ -446,7 +451,101 @@ public:
       [TAMP_F32_E4_P5] "i"(TAMP_F32_E4_P5),
       [TAMP_F32_E4_P6] "i"(TAMP_F32_E4_P6),
       [TAMP_F32_E4_P7] "i"(TAMP_F32_E4_P7)
-    : "memory", "$m0", "$a0:1", "$a2:3"); // clobbered
+    : "memory", "$m0", "$m4", "$m5", "$m6", "$a0:1", "$a2:3"); // clobbered
+
+    return true;
+  }
+};
+
+class Transform4x4_amp_full_pipeline : public poplar::MultiVertex {
+public:
+  poplar::InOut<poplar::Vector<float, poplar::VectorLayout::SPAN, 32, true>> vectors;
+
+  bool compute(unsigned workerId) {
+    // First we zero all of this worker's accumulation registers (workers share
+    // a weight matrix but have their own accumulators). We do not need to do this
+    // again because in the loop we will insert zeros in the right places as we push
+    // data through the AMP engines.
+    zeroFpAccumulators();
+
+    const unsigned startIndex = 8 * workerId;
+    constexpr unsigned stride = 8 * numWorkers();
+    constexpr unsigned step = 4 * numWorkers() - 3;
+    // To use ldst64pace we need to ensure these pointers go in consecutive addresses:
+    register float* srcPtr asm("$m2") = &vectors[startIndex];
+    register float* dstPtr asm("$m3") = &vectors[startIndex];
+
+    // In the ASM loop we repeatedly subtract stride from 'span' and when it
+    // is less than zero the worker is done. Without coding the loop in ASM
+    // the compiler will try to be clever and divide this by the stride and
+    // then use brnzdec. However, that saves no instructions in the loop as
+    // we can dual issue the comparison, where as dividing by the stride
+    // increases the code size due to a large preamble before the loop.
+    int span = vectors.size() - startIndex;
+
+    asm (R"(
+      ldconst $m6, 1
+      LOOP_START%=:
+      ld64step $a0:1, $mzero, %[loadAddr]+=, 1
+      {
+        sub %[span], %[span], %[stride]
+        f32sisoamp $azeros, $a0, $azeros, %[TAMP_F32_E4_P0]
+      }
+      {
+        ld64step $a0:1, $mzero, %[loadAddr]+=, 1
+        f32sisoamp $azeros, $a1, $azeros, %[TAMP_F32_E4_P1]
+      }
+      f32sisoamp $azeros, $a0, $azeros, %[TAMP_F32_E4_P2]
+      {
+        ld64step $a0:1, $mzero, %[loadAddr]+=, 1
+        f32sisoamp $azeros, $a1, $azeros, %[TAMP_F32_E4_P3]
+      }
+      f32sisoamp $azeros, $a0, $azeros, %[TAMP_F32_E4_P4]
+      {
+        ld64step $a0:1, $mzero, %[loadAddr]+=, %[step]
+        f32sisoamp $azeros, $a1, $azeros, %[TAMP_F32_E4_P5]
+      }
+      f32sisoamp $azeros, $a0, $azeros, %[TAMP_F32_E4_P6]
+      f32sisoamp $azeros, $a1, $azeros, %[TAMP_F32_E4_P7]
+
+      f32sisoamp $a2:3, $azero, $azeros, %[TAMP_F32_E4_P0]
+
+      {
+        st64step $a2:3, $mzero, %[storeAddr]+=, 1
+        f32sisoamp $azeros, $azero, $azeros, %[TAMP_F32_E4_P1]
+      }
+      f32sisoamp $a2:3, $azero, $azeros, %[TAMP_F32_E4_P2]
+      {
+        st64step $a2:3, $mzero, %[storeAddr]+=, 1
+        f32sisoamp $azeros, $azero, $azeros, %[TAMP_F32_E4_P3]
+      }
+      f32sisoamp $a2:3, $azero, $azeros, %[TAMP_F32_E4_P4]
+      {
+        st64step $a2:3, $mzero, %[storeAddr]+=, 1
+        f32sisoamp $azeros, $azero, $azeros, %[TAMP_F32_E4_P5]
+      }
+      {
+        cmpslt $m0, %[span], 0
+        f32sisoamp $a2:3, $azero, $azeros, %[TAMP_F32_E4_P6]
+      }
+      st64step $a2:3, $mzero, %[storeAddr]+=, %[step]
+      brz $m0, LOOP_START%=
+    )"
+    : // outputs
+    : [loadAddr] "r"(srcPtr), // inputs
+      [storeAddr] "r"(dstPtr), // inputs
+      [step] "r"(step),
+      [span] "r"(span),
+      [stride] "r"(stride),
+      [TAMP_F32_E4_P0] "i"(TAMP_F32_E4_P0),
+      [TAMP_F32_E4_P1] "i"(TAMP_F32_E4_P1),
+      [TAMP_F32_E4_P2] "i"(TAMP_F32_E4_P2),
+      [TAMP_F32_E4_P3] "i"(TAMP_F32_E4_P3),
+      [TAMP_F32_E4_P4] "i"(TAMP_F32_E4_P4),
+      [TAMP_F32_E4_P5] "i"(TAMP_F32_E4_P5),
+      [TAMP_F32_E4_P6] "i"(TAMP_F32_E4_P6),
+      [TAMP_F32_E4_P7] "i"(TAMP_F32_E4_P7)
+    : "memory", "$m0", "$m4", "$m5", "$m6", "$a0:1", "$a2:3"); // clobbered
 
     return true;
   }
