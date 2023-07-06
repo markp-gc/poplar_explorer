@@ -1,6 +1,8 @@
 #ifndef INCLUDED_JPEG_DECODER_H
 #define INCLUDED_JPEG_DECODER_H
 
+#include "TileAlloc.hpp"
+
 // This is a cosmetic restructing and port to C++ class of 'NanoJPEG', found
 // at https://keyj.emphy.de/nanojpeg/. It's been made somewhat thread safe in that
 // all context information is pulled into an object, rather than being global
@@ -117,7 +119,7 @@ namespace Jpeg
 
         // decode the raw data. object is very large, and probably shouldn't
         // go on the stack.
-        Decoder(Context& context, const unsigned char* data, size_t size, void *(*allocFunc)(size_t) = tileMalloc, void (*freeFunc)(void*) = tileFree);
+        Decoder(Context& context, Allocator& alloc, const unsigned char* data, size_t size);
         ~Decoder();
 
         // the result of decode
@@ -150,8 +152,7 @@ namespace Jpeg
 
         Context& ctx;
         char ZZ[64];
-        void *(*AllocMem)(size_t);
-        void (*FreeMem)(void*);
+        Allocator& allocator;
 
 
         inline unsigned char _Clip(const int x) {
@@ -377,10 +378,10 @@ namespace Jpeg
                 c->height = (ctx.height * c->ssy + ssymax - 1) / ssymax;
                 c->stride = ctx.mbwidth * ctx.mbsizex * c->ssx / ssxmax;
                 if (((c->width < 3) && (c->ssx != ssxmax)) || ((c->height < 3) && (c->ssy != ssymax))) JPEG_DECODER_THROW(Unsupported);
-                if (!(c->pixels = (unsigned char*)AllocMem(c->stride * (ctx.mbheight * ctx.mbsizey * c->ssy / ssymax)))) JPEG_DECODER_THROW(OutOfMemory);
+                if (!(c->pixels = (unsigned char*)allocator.alloc(c->stride * (ctx.mbheight * ctx.mbsizey * c->ssy / ssymax)))) JPEG_DECODER_THROW(OutOfMemory);
             }
             if (ctx.ncomp == 3) {
-                ctx.rgb = (unsigned char*)AllocMem(ctx.width * ctx.height * ctx.ncomp);
+                ctx.rgb = (unsigned char*)allocator.alloc(ctx.width * ctx.height * ctx.ncomp);
                 if (!ctx.rgb) JPEG_DECODER_THROW(OutOfMemory);
             }
             _Skip(ctx.length);
@@ -547,7 +548,7 @@ namespace Jpeg
             const int xmax = c->width - 3;
             unsigned char *out, *lin, *lout;
             int x, y;
-            out = (unsigned char*)AllocMem((c->width * c->height) << 1);
+            out = (unsigned char*)allocator.alloc((c->width * c->height) << 1);
             if (!out) JPEG_DECODER_THROW(OutOfMemory);
             lin = c->pixels;
             lout = out;
@@ -567,7 +568,7 @@ namespace Jpeg
             }
             c->width <<= 1;
             c->stride = c->width;
-            FreeMem(c->pixels);
+            allocator.free(c->pixels);
             c->pixels = out;
         }
 
@@ -575,7 +576,7 @@ namespace Jpeg
             const int w = c->width, s1 = c->stride, s2 = s1 + s1;
             unsigned char *out, *cin, *cout;
             int x, y;
-            out = (unsigned char*)AllocMem((c->width * c->height) << 1);
+            out = (unsigned char*)allocator.alloc((c->width * c->height) << 1);
             if (!out) JPEG_DECODER_THROW(OutOfMemory);
             for (x = 0;  x < w;  ++x) {
                 cin = &c->pixels[x];
@@ -596,7 +597,7 @@ namespace Jpeg
             }
             c->height <<= 1;
             c->stride = c->width;
-            FreeMem(c->pixels);
+            allocator.free(c->pixels);
             c->pixels = out;
         }
 
@@ -677,10 +678,9 @@ namespace Jpeg
     };
 
 
-inline Decoder::Decoder(Decoder::Context& context, const unsigned char* data, size_t size, void *(*allocFunc)(size_t), void (*freeFunc)(void*))
+inline Decoder::Decoder(Context& context, Allocator& alloc, const unsigned char* data, size_t size)
     : ctx(context),
-      AllocMem(allocFunc)
-    , FreeMem(freeFunc)
+      allocator(alloc)
 {
     // should be static data, but this keeps us as a header
     char temp[64] = { 0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18,
@@ -703,8 +703,8 @@ inline Decoder::~Decoder()
 {
     int i;
     for (i = 0;  i < 3;  ++i)
-        if (ctx.comp[i].pixels) FreeMem((void*) ctx.comp[i].pixels);
-    if (ctx.rgb) FreeMem((void*) ctx.rgb);
+        if (ctx.comp[i].pixels) allocator.free((void*) ctx.comp[i].pixels);
+    if (ctx.rgb) allocator.free((void*) ctx.rgb);
 }
 
 }
