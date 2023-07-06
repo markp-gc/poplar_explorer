@@ -2,7 +2,7 @@
 #define INCLUDED_JPEG_DECODER_H
 
 // This is a cosmetic restructing and port to C++ class of 'NanoJPEG', found
-// at http://keyj.s2000.ws/?p=137. It's been made somewhat thread safe in that
+// at https://keyj.emphy.de/nanojpeg/. It's been made somewhat thread safe in that
 // all context information is pulled into an object, rather than being global
 // as the original was. Other than that, the original is superior in
 // configurability, comments, cleanliness, portability, etc. and should be
@@ -40,8 +40,30 @@
     #pragma warning(disable: 4706) // assignment within conditional
 #endif
 
-void* tileMalloc(size_t) { return nullptr; }
-void tileFree(void*) {}
+#ifdef __IPU__
+
+void* tileMalloc(size_t n) {
+  return nullptr;
+}
+
+void tileFree(void* addr) {
+  ;
+}
+
+#else
+
+void* tileMalloc(size_t n) {
+  auto ptr = malloc(n);
+  printf("malloc size: %lu at %p\n", n, ptr);
+  return ptr;
+}
+
+void tileFree(void* addr) {
+  printf("Free ptr: %p\n", addr);
+  free(addr);
+}
+
+#endif
 
 namespace Jpeg
 {
@@ -59,38 +81,6 @@ namespace Jpeg
             Internal_Finished, // used internally, will never be reported
         };
 
-        // decode the raw data. object is very large, and probably shouldn't
-        // go on the stack.
-        Decoder(const unsigned char* data, size_t size, void *(*allocFunc)(size_t) = tileMalloc, void (*freeFunc)(void*) = tileFree);
-        ~Decoder();
-
-        // the result of decode
-        DecodeResult GetResult() const;
-
-        // all remaining functions below are only valid if GetResult() == OK.
-
-        int GetWidth() const;
-        int GetHeight() const;
-        bool IsColor() const;
-
-        // if IsColor() then 24bit as R,G,B bytes
-        // else 8 bit luminance
-        unsigned char* GetImage() const;
-
-        // in bytes
-        size_t GetImageSize() const;
-        
-        //////////////////////////////////////////////////////////////////////
-        //////////////////////////////////////////////////////////////////////
-        //////////////////////////////////////////////////////////////////////
-        //
-        // Implementation follows
-        //
-        //////////////////////////////////////////////////////////////////////
-        //////////////////////////////////////////////////////////////////////
-        //////////////////////////////////////////////////////////////////////
-
-    private:
         struct VlcCode {
             unsigned char bits, code;
         };
@@ -125,7 +115,40 @@ namespace Jpeg
             unsigned char *rgb;
         };
 
-        Context ctx;
+        // decode the raw data. object is very large, and probably shouldn't
+        // go on the stack.
+        Decoder(Context& context, const unsigned char* data, size_t size, void *(*allocFunc)(size_t) = tileMalloc, void (*freeFunc)(void*) = tileFree);
+        ~Decoder();
+
+        // the result of decode
+        DecodeResult GetResult() const;
+
+        // all remaining functions below are only valid if GetResult() == OK.
+
+        int GetWidth() const;
+        int GetHeight() const;
+        bool IsColor() const;
+
+        // if IsColor() then 24bit as R,G,B bytes
+        // else 8 bit luminance
+        unsigned char* GetImage() const;
+
+        // in bytes
+        size_t GetImageSize() const;
+
+        //////////////////////////////////////////////////////////////////////
+        //////////////////////////////////////////////////////////////////////
+        //////////////////////////////////////////////////////////////////////
+        //
+        // Implementation follows
+        //
+        //////////////////////////////////////////////////////////////////////
+        //////////////////////////////////////////////////////////////////////
+        //////////////////////////////////////////////////////////////////////
+
+    private:
+
+        Context& ctx;
         char ZZ[64];
         void *(*AllocMem)(size_t);
         void (*FreeMem)(void*);
@@ -654,8 +677,9 @@ namespace Jpeg
     };
 
 
-inline Decoder::Decoder(const unsigned char* data, size_t size, void *(*allocFunc)(size_t), void (*freeFunc)(void*))
-    : AllocMem(allocFunc)
+inline Decoder::Decoder(Decoder::Context& context, const unsigned char* data, size_t size, void *(*allocFunc)(size_t), void (*freeFunc)(void*))
+    : ctx(context),
+      AllocMem(allocFunc)
     , FreeMem(freeFunc)
 {
     // should be static data, but this keeps us as a header
