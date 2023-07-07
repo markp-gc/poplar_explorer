@@ -45,8 +45,14 @@ cpuJpegDecode(const std::string& inFile, const std::string& outFile, std::uint32
   Allocator alloc(heap.data(), heap.size());
 
   Jpeg::Decoder::Context context;
+  std::vector<Jpeg::Decoder::VlcCode> vlcTable(4 * 65536);
+
+  context.clear();
+  context.attachVlcTable(vlcTable.data());
+
   Jpeg::Decoder decoder(context, alloc, inBytes.data(), inBytes.size());
   if (decoder.GetResult() != Jpeg::Decoder::OK) {
+    ipu_utils::logger()->error("JPEG decoder error code: {}", decoder.GetResult());
     throw std::runtime_error("Error in CPU JPEG decoding.");
   }
 
@@ -103,13 +109,18 @@ struct JpegDecoder :
     input.buildTensor(graph, poplar::UNSIGNED_CHAR, {inputBuffer.size()});
     output.buildTensor(graph, poplar::UNSIGNED_CHAR, {outputBuffer.size()});
 
+    // Add tensor to store the decoder table:
+    auto vlcTable = graph.addVariable(poplar::UNSIGNED_CHAR, {4 * 65536 * sizeof(Jpeg::Decoder::VlcCode)}, "jpeg_vlc_table");
+
     graph.connect(decodeVert["buffer"], input);
     graph.connect(decodeVert["heap"], heap);
     graph.connect(decodeVert["result"], output);
+    graph.connect(decodeVert["vlcTable"], vlcTable);
 
     graph.setTileMapping(input, 0u);
     graph.setTileMapping(output, 0u);
     graph.setTileMapping(heap, 0u);
+    graph.setTileMapping(vlcTable, 0u);
     graph.setTileMapping(decodeVert, 0u);
 
     auto uploadJpeg = input.buildWrite(graph, true);

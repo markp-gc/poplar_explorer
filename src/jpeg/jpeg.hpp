@@ -84,6 +84,7 @@ namespace Jpeg
         };
 
         struct VlcCode {
+            VlcCode() : bits(0), code(0) {}
             unsigned char bits, code;
         };
 
@@ -110,11 +111,24 @@ namespace Jpeg
             Component comp[3];
             int qtused, qtavail;
             unsigned char qtab[4][64];
-            VlcCode vlctab[4][65536];
+            VlcCode* vlctab[4];
             int buf, bufbits;
             int block[64];
             int rstinterval;
             unsigned char *rgb;
+
+            void clear() {
+              memset(this, 0, sizeof(Context));
+            }
+
+            void attachVlcTable(VlcCode* ptr) {
+              // The table is a fixed size [4][65536] so from the base
+              // pointer we can work out the 2D array offsets:
+              for (auto i = 0u; i < 4; ++i) {
+                vlctab[i] = ptr;
+                ptr += 65536;
+              }
+            }
         };
 
         // decode the raw data. object is very large, and probably shouldn't
@@ -388,7 +402,7 @@ namespace Jpeg
         }
 
         inline void _DecodeDHT(void) {
-            int codelen, currcnt, remain, spread, i, j;
+            int codelen, current, remain, spread, i, j;
             VlcCode *vlc;
             unsigned char counts[16];
             _DecodeLength();
@@ -404,12 +418,12 @@ namespace Jpeg
                 remain = spread = 65536;
                 for (codelen = 1;  codelen <= 16;  ++codelen) {
                     spread >>= 1;
-                    currcnt = counts[codelen - 1];
-                    if (!currcnt) continue;
-                    if (ctx.length < currcnt) JPEG_DECODER_THROW(SyntaxError);
-                    remain -= currcnt << (16 - codelen);
+                    current = counts[codelen - 1];
+                    if (!current) continue;
+                    if (ctx.length < current) JPEG_DECODER_THROW(SyntaxError);
+                    remain -= current << (16 - codelen);
                     if (remain < 0) JPEG_DECODER_THROW(SyntaxError);
-                    for (i = 0;  i < currcnt;  ++i) {
+                    for (i = 0;  i < current;  ++i) {
                         unsigned char code = ctx.pos[i];
                         for (j = spread;  j;  --j) {
                             vlc->bits = (unsigned char) codelen;
@@ -417,7 +431,7 @@ namespace Jpeg
                             ++vlc;
                         }
                     }
-                    _Skip(currcnt);
+                    _Skip(current);
                 }
                 while (remain--) {
                     vlc->bits = 0;
@@ -453,12 +467,19 @@ namespace Jpeg
         inline int _GetVLC(VlcCode* vlc, unsigned char* code) {
             int value = _ShowBits(16);
             int bits = vlc[value].bits;
-            if (!bits) { ctx.error = SyntaxError; return 0; }
+            if (!bits) {
+              ctx.error = SyntaxError;
+              return 0;
+            }
             _SkipBits(bits);
             value = vlc[value].code;
-            if (code) *code = (unsigned char) value;
+            if (code) {
+              *code = (unsigned char) value;
+            }
             bits = value & 15;
-            if (!bits) return 0;
+            if (!bits) {
+              return 0;
+            }
             value = _GetBits(bits);
             if (value < (1 << (bits - 1))) {
                 value += (-(1 << bits)) + 1;
@@ -688,7 +709,6 @@ inline Decoder::Decoder(Context& context, Allocator& alloc, const unsigned char*
         42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51, 58, 59, 52, 45,
         38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63 };
     memcpy(ZZ, temp, sizeof(ZZ));
-    memset(&ctx, 0, sizeof(Context));
     _Decode(data, size);
 }
 

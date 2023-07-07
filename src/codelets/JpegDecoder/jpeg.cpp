@@ -1,5 +1,4 @@
 
-
 #include <poplar/Vertex.hpp>
 #include <poplar/StackSizeDefs.hpp>
 
@@ -19,11 +18,16 @@ static Jpeg::Decoder::Context sharedCtxt;
 
 class JpegDecode : public poplar::Vertex {
 public:
-  Input<Vector<unsigned char, poplar::VectorLayout::SPAN, 16, false>> buffer;
-  InOut<Vector<unsigned char, poplar::VectorLayout::SPAN, 16, false>> heap;
-  Output<Vector<unsigned char, poplar::VectorLayout::SPAN, 16, false>> result;
+  Input<Vector<unsigned char, poplar::VectorLayout::SPAN, 16, true>> buffer;
+  InOut<Vector<unsigned char, poplar::VectorLayout::SPAN, 16, true>> heap;
+  Output<Vector<unsigned char, poplar::VectorLayout::SPAN, 16, true>> result;
+  Output<Vector<unsigned char, poplar::VectorLayout::SPAN, 4>> vlcTable;
 
   bool compute() {
+    sharedCtxt.clear();
+    DEBUG_PRINT("Table size: %d\n", vlcTable.size());
+    sharedCtxt.attachVlcTable((Jpeg::Decoder::VlcCode*)&vlcTable[0]);
+
     Allocator alloc(&heap[0], heap.size());
     Jpeg::Decoder decoder(sharedCtxt, alloc, &buffer[0], buffer.size());
 
