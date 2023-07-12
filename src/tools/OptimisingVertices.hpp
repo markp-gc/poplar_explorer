@@ -149,7 +149,7 @@ struct OptimisingVertices :
       return;
     }
 
-    const auto maxPrintSize = 64u;
+    const auto maxPrintSize = 128u;
     if (inputData.size() <= maxPrintSize) {
       ipu_utils::logger()->info("Input: {}", inputData);
       ipu_utils::logger()->info("Result: {}", outputData);
@@ -169,6 +169,12 @@ struct OptimisingVertices :
       std::swap(inputData[i], inputData[i + 1]);
     }
     if (inputData != outputData) {
+      for (auto i = 0u; i < inputData.size(); ++i) {
+        if (inputData[i] != outputData[i]) {
+          ipu_utils::logger()->error("First mismatch at index {}", i);
+          break;
+        }
+      }
       throw std::runtime_error("Result does not match.");
     }
   }
