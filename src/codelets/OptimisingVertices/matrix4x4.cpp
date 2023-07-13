@@ -263,7 +263,6 @@ public:
     __builtin_ipu_ld128putcs(CWEI<3, 0>::value);
 
     // Load the same 4x4 matrix into the lower right hand corner of weight matrix:
-
     __builtin_ipu_put(loadStart, CCCSLOAD);
     // Load matrix slice [0, 0:3] to CWEI_4_2 and CWEI_4_3:
     __builtin_ipu_ld128putcs(CWEI<4, 2>::value);
@@ -577,6 +576,133 @@ public:
       [TAMP_F32_E4_P6] "i"(TAMP_F32_E4_P6),
       [TAMP_F32_E4_P7] "i"(TAMP_F32_E4_P7)
     : "memory", "$m0", "$a0:1", "$a2:3"); // clobbered
+
+    return true;
+  }
+};
+
+class Transform4x4_amp_tapack : public poplar::MultiVertex {
+public:
+  poplar::InOut<poplar::Vector<float, poplar::VectorLayout::SPAN, 32, true>> vectors;
+
+  bool compute(unsigned workerId) {
+    zeroFpAccumulators();
+
+    const unsigned startIndex = 8 * workerId;
+    constexpr unsigned stride = 8 * numWorkers();
+    constexpr unsigned step = 4 * numWorkers() - 3;
+    // Ensure these pointers go in consecutive addresses:
+    register float* srcPtr asm("$m2") = &vectors[startIndex];
+    register float* dstPtr asm("$m3") = &vectors[startIndex];
+    int span = vectors.size() - startIndex;
+
+    // This is the same vertex as Transform4x4_amp_full_pipeline but in the inner loop
+    // we use triple packed adresses and an instruction that simultaneously loads/stores
+    // and increments two pointers to reduce instructions.
+    asm (R"(
+      .allow_optimizations
+
+      # Fill (inject 8 elements):
+      ld64step $a0:1, $mzero, %[loadAddr]+=, 1
+      {
+        // Adjust span so we do one fewer loop iterations:
+        sub %[span], %[span], %[stride]
+        f32sisoamp $azeros, $a0, $azeros, %[TAMP_F32_E4_P0]
+      }
+      {
+        ld64step $a0:1, $mzero, %[loadAddr]+=, 1
+        f32sisoamp $azeros, $a1, $azeros, %[TAMP_F32_E4_P1]
+      }
+      f32sisoamp $azeros, $a0, $azeros, %[TAMP_F32_E4_P2]
+      {
+        ld64step $a0:1, $mzero, %[loadAddr]+=, 1
+        f32sisoamp $azeros, $a1, $azeros, %[TAMP_F32_E4_P3]
+      }
+      f32sisoamp $azeros, $a0, $azeros, %[TAMP_F32_E4_P4]
+      {
+        // Note we use $a2:3 here to free up a dual issue slot for tapack:
+        ld64step $a2:3, $mzero, %[loadAddr]+=, %[step]
+        f32sisoamp $azeros, $a1, $azeros, %[TAMP_F32_E4_P5]
+      }
+      {
+        // Pre-load first input pair before entering the loop.
+        // (Note we switch back to loads into $a0:1 ready for the loop):
+        ld64step $a0:1, $mzero, %[loadAddr]+=, 1
+        f32sisoamp $azeros, $a2, $azeros, %[TAMP_F32_E4_P6]
+      }
+      {
+        // Use of $a2:3 above now allows us to dual issue tapack here as the
+        // pointers were incremented earlier than they otherwise would be:
+        tapack $m4:5, %[loadAddr], $mzero, %[storeAddr]
+        f32sisoamp $azeros, $a3, $azeros, %[TAMP_F32_E4_P7]
+      }
+
+      # Main loop (inject 8 and retrieve 8 elements per iteration):
+      LOOP_START%=:
+        {
+          sub %[span], %[span], %[stride]
+          f32sisoamp $a2:3, $a0, $azeros, %[TAMP_F32_E4_P0]
+        }
+        {
+          ldst64pace $a0:1, $a2:3, $m4:5+=, $mzero, 0b0000
+          f32sisoamp $azeros, $a1, $azeros, %[TAMP_F32_E4_P1]
+        }
+        {
+          cmpslt $m0, %[span], 0
+          f32sisoamp $a2:3, $a0, $azeros, %[TAMP_F32_E4_P2]
+        }
+        {
+          ldst64pace $a0:1, $a2:3, $m4:5+=, $mzero, 0b0000
+          f32sisoamp $azeros, $a1, $azeros, %[TAMP_F32_E4_P3]
+        }
+        f32sisoamp $a2:3, $a0, $azeros, %[TAMP_F32_E4_P4]
+        {
+          // Use stride specification to jump the read pointer to the worker's next chunk:
+          ldst64pace $a0:1, $a2:3, $m4:5+=, %[step], 0b0001
+          f32sisoamp $azeros, $a1, $azeros, %[TAMP_F32_E4_P5]
+        }
+        f32sisoamp $a2:3, $a0, $azeros, %[TAMP_F32_E4_P6]
+        {
+          // Use stride specification to jump the write pointer to the worker's next chunk:
+          ldst64pace $a0:1, $a2:3, $m4:5+=, %[step], 0b0100 // At the end of the loop this is an over-read
+          f32sisoamp $azeros, $a1, $azeros, %[TAMP_F32_E4_P7]
+        }
+      brz $m0, LOOP_START%=
+
+      # Drain (retrieve and store the last 8 elements):
+      f32sisoamp $a2:3, $azero, $azeros, %[TAMP_F32_E4_P0]
+      {
+        st64pace $a2:3, $m4:5+=, $mzero, 0b00
+        f32sisoamp $azeros, $azero, $azeros, %[TAMP_F32_E4_P1]
+      }
+      f32sisoamp $a2:3, $azero, $azeros, %[TAMP_F32_E4_P2]
+      {
+        st64pace $a2:3, $m4:5+=, $mzero, 0b00
+        f32sisoamp $azeros, $azero, $azeros, %[TAMP_F32_E4_P3]
+      }
+      f32sisoamp $a2:3, $azero, $azeros, %[TAMP_F32_E4_P4]
+      {
+        st64pace $a2:3, $m4:5+=, $mzero, 0b00
+        f32sisoamp $azeros, $a1, $azeros, %[TAMP_F32_E4_P5]
+      }
+      f32sisoamp $a2:3, $azero, $azeros, %[TAMP_F32_E4_P6]
+      st64pace $a2:3, $m4:5+=, $mzero, 0b00
+    )"
+    : // outputs
+    : [loadAddr] "r"(srcPtr), // inputs
+      [storeAddr] "r"(dstPtr), // inputs
+      [step] "r"(step),
+      [span] "r"(span),
+      [stride] "r"(stride),
+      [TAMP_F32_E4_P0] "i"(TAMP_F32_E4_P0),
+      [TAMP_F32_E4_P1] "i"(TAMP_F32_E4_P1),
+      [TAMP_F32_E4_P2] "i"(TAMP_F32_E4_P2),
+      [TAMP_F32_E4_P3] "i"(TAMP_F32_E4_P3),
+      [TAMP_F32_E4_P4] "i"(TAMP_F32_E4_P4),
+      [TAMP_F32_E4_P5] "i"(TAMP_F32_E4_P5),
+      [TAMP_F32_E4_P6] "i"(TAMP_F32_E4_P6),
+      [TAMP_F32_E4_P7] "i"(TAMP_F32_E4_P7)
+    : "memory", "$m0", "$m4:5", "$a0:1", "$a2:3"); // clobbered
 
     return true;
   }
