@@ -27,7 +27,7 @@ struct OptimisingVertices :
      "Dimension of vectors in computation.")
     // Value of 'iterations' is stored directly to the 'iterations' member variable:
     ("vertex", po::value<std::string>(&vertexName)->default_value("Transform4x4"),
-     "Name of the transform vertex to use [Transform4x4, Transform4x4_intrinsics, Transform4x4_asm, Transform4x4_amp_basic, Transform4x4_amp_8_engines].")
+     "Name of the transform vertex to use [Transform4x4, Transform4x4_intrinsics, Transform4x4_asm, Transform4x4_amp_basic, Transform4x4_amp_8_engines, Transform4x4_amp_full_pipeline, Transform4x4_amp_tapack].")
     ;
   }
 
