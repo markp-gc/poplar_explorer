@@ -11,11 +11,11 @@
 #include <poputil/TileMapping.hpp>
 #include <poplar/CycleCount.hpp>
 
-struct OptimisingVertices :
+struct AmpOptimisations :
   public ipu_utils::BuilderInterface, public ToolInterface
 {
-  OptimisingVertices() : input("input"), cycleCount("cycles"), vertexUsesAmp(false) {}
-  virtual ~OptimisingVertices() {}
+  AmpOptimisations() : input("input"), cycleCount("cycles"), vertexUsesAmp(false) {}
+  virtual ~AmpOptimisations() {}
 
   /// Tool interface:
 
@@ -27,7 +27,10 @@ struct OptimisingVertices :
      "Dimension of vectors in computation.")
     // Value of 'iterations' is stored directly to the 'iterations' member variable:
     ("vertex", po::value<std::string>(&vertexName)->default_value("Transform4x4"),
-     "Name of the transform vertex to use [Transform4x4, Transform4x4_intrinsics, Transform4x4_asm, Transform4x4_amp_basic, Transform4x4_amp_8_engines, Transform4x4_amp_full_pipeline, Transform4x4_amp_tapack].")
+     "Name of the transform vertex to use "
+     "[Transform4x4, Transform4x4_intrinsics, Transform4x4_asm, Transform4x4_amp_basic, "
+     "Transform4x4_amp_8_engines, Transform4x4_amp_full_pipeline, Transform4x4_amp_tapack, "
+     "Transform4x4_amp_brnzdec, Transform4x4_amp_rpt].")
     ;
   }
 
@@ -65,7 +68,7 @@ struct OptimisingVertices :
 
   /// Builder interface:
   void build(poplar::Graph& graph, const poplar::Target& target) override {
-    graph.addCodelets("../src/codelets/OptimisingVertices/matrix4x4.cpp", poplar::CodeletFileType::Auto, "-O3");
+    graph.addCodelets("../src/codelets/AmpOptimisations/matrix4x4.cpp", poplar::CodeletFileType::Auto, "-O3");
 
     // Add input vector var:
     input = graph.addVariable(poplar::FLOAT, {inputData.size()}, "vectors");
