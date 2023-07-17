@@ -51,7 +51,7 @@ struct AmpOptimisations :
     } else if (vertexName == "Transform4x4_asm") {
       sizeDivisor = 8u;
     } else if (vertexUsesAmp) {
-      sizeDivisor = 16u;
+      sizeDivisor = 8u;
     } else {
       std::stringstream ss;
       ss << "Invalid vertex name: '" << vertexName << "'";
@@ -161,11 +161,14 @@ struct AmpOptimisations :
     const double secs = std::chrono::duration<double>(t1 - t0).count();
     const auto flops = (inputData.size() / 4) * (7 * 4);
     const float flopsPerCycle = flops/(float)cycles;
+    const float vertsPerCycle = (inputData.size() / 4)/(float)cycles;
     ipu_utils::logger()->info("Engine run time: {} seconds", secs);
     ipu_utils::logger()->info("FLOP count: {}", flops);
     ipu_utils::logger()->info("Cycle count: {}", cycles);
     ipu_utils::logger()->info("FLOPs/cycle: {}", flopsPerCycle);
+    ipu_utils::logger()->info("Vertices/cycle: {}", vertsPerCycle);
     ipu_utils::logger()->info("Extrapolated FLOPs/cycle/device: {}", flopsPerCycle * device.getTarget().getNumTiles());
+    ipu_utils::logger()->info("Extrapolated vertices/cycle/device: {}", vertsPerCycle * device.getTarget().getNumTiles());
 
     // Check the result:
     for (auto i = 0u; i < inputData.size() - 1; i += 2) {

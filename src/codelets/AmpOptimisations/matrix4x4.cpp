@@ -861,23 +861,20 @@ public:
         ld64step $a0:1, $mzero, %[loadAddr]+=, 1
         f32sisoamp $azeros, $a1, $azeros, %[TAMP_F32_E4_P3]
       }
-      f32sisoamp $azeros, $a0, $azeros, %[TAMP_F32_E4_P4]
       {
-        // Note we use $a2:3 here to free up a dual issue slot for tapack:
+        // Note we use $a2:3 here to free up more dual issue slots later:
         ld64step $a2:3, $mzero, %[loadAddr]+=, %[step]
-        f32sisoamp $azeros, $a1, $azeros, %[TAMP_F32_E4_P5]
+        f32sisoamp $azeros, $a0, $azeros, %[TAMP_F32_E4_P4]
       }
       {
         // Pre-load first input pair before entering the loop.
         // (Note we switch back to loads into $a0:1 ready for the loop):
         ld64step $a0:1, $mzero, %[loadAddr]+=, 1
-        f32sisoamp $azeros, $a2, $azeros, %[TAMP_F32_E4_P6]
+        f32sisoamp $azeros, $a1, $azeros, %[TAMP_F32_E4_P5]
       }
       {
-        // Use of $a2:3 above now allows us to dual issue tapack here as the
-        // pointers were incremented earlier than they otherwise would be:
         tapack $m4:5, %[loadAddr], $mzero, %[storeAddr]
-        f32sisoamp $azeros, $a3, $azeros, %[TAMP_F32_E4_P7]
+        f32sisoamp $azeros, $a2, $azeros, %[TAMP_F32_E4_P6]
       }
 
       # Main loop (inject 8 and retrieve 8 elements per iteration):
@@ -885,7 +882,7 @@ public:
         .align 8
         {
           rpt %[iterations], 7
-          fnop
+          f32sisoamp $azeros, $a3, $azeros, %[TAMP_F32_E4_P7] // This is not part of the loop
         }
         {
           nop
