@@ -878,12 +878,12 @@ public:
       }
 
       # Main loop (inject 8 and retrieve 8 elements per iteration):
-      LOOP_START%=:
         .align 8
         {
           rpt %[iterations], 7
           f32sisoamp $azeros, $a3, $azeros, %[TAMP_F32_E4_P7] // This is not part of the loop
         }
+        LOOP_START%=:
         {
           nop
           f32sisoamp $a2:3, $a0, $azeros, %[TAMP_F32_E4_P0]
