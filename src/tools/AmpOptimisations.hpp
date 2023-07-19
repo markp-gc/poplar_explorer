@@ -11,11 +11,11 @@
 #include <poputil/TileMapping.hpp>
 #include <poplar/CycleCount.hpp>
 
-struct OptimisingVertices :
+struct AmpOptimisations :
   public ipu_utils::BuilderInterface, public ToolInterface
 {
-  OptimisingVertices() : input("input"), cycleCount("cycles"), vertexUsesAmp(false) {}
-  virtual ~OptimisingVertices() {}
+  AmpOptimisations() : input("input"), cycleCount("cycles"), vertexUsesAmp(false) {}
+  virtual ~AmpOptimisations() {}
 
   /// Tool interface:
 
@@ -27,7 +27,10 @@ struct OptimisingVertices :
      "Dimension of vectors in computation.")
     // Value of 'iterations' is stored directly to the 'iterations' member variable:
     ("vertex", po::value<std::string>(&vertexName)->default_value("Transform4x4"),
-     "Name of the transform vertex to use [Transform4x4, Transform4x4_intrinsics, Transform4x4_asm, Transform4x4_amp_basic, Transform4x4_amp_8_engines].")
+     "Name of the transform vertex to use "
+     "[Transform4x4, Transform4x4_intrinsics, Transform4x4_asm, Transform4x4_amp_basic, "
+     "Transform4x4_amp_8_engines, Transform4x4_amp_full_pipeline, Transform4x4_amp_tapack, "
+     "Transform4x4_amp_brnzdec, Transform4x4_amp_rpt].")
     ;
   }
 
@@ -48,7 +51,7 @@ struct OptimisingVertices :
     } else if (vertexName == "Transform4x4_asm") {
       sizeDivisor = 8u;
     } else if (vertexUsesAmp) {
-      sizeDivisor = 16u;
+      sizeDivisor = 8u;
     } else {
       std::stringstream ss;
       ss << "Invalid vertex name: '" << vertexName << "'";
@@ -65,7 +68,7 @@ struct OptimisingVertices :
 
   /// Builder interface:
   void build(poplar::Graph& graph, const poplar::Target& target) override {
-    graph.addCodelets("../src/codelets/OptimisingVertices/matrix4x4.cpp", poplar::CodeletFileType::Auto, "-O3");
+    graph.addCodelets("../src/codelets/AmpOptimisations/matrix4x4.cpp", poplar::CodeletFileType::Auto, "-O3");
 
     // Add input vector var:
     input = graph.addVariable(poplar::FLOAT, {inputData.size()}, "vectors");
@@ -149,7 +152,7 @@ struct OptimisingVertices :
       return;
     }
 
-    const auto maxPrintSize = 64u;
+    const auto maxPrintSize = 128u;
     if (inputData.size() <= maxPrintSize) {
       ipu_utils::logger()->info("Input: {}", inputData);
       ipu_utils::logger()->info("Result: {}", outputData);
@@ -158,17 +161,26 @@ struct OptimisingVertices :
     const double secs = std::chrono::duration<double>(t1 - t0).count();
     const auto flops = (inputData.size() / 4) * (7 * 4);
     const float flopsPerCycle = flops/(float)cycles;
+    const float vertsPerCycle = (inputData.size() / 4)/(float)cycles;
     ipu_utils::logger()->info("Engine run time: {} seconds", secs);
     ipu_utils::logger()->info("FLOP count: {}", flops);
     ipu_utils::logger()->info("Cycle count: {}", cycles);
     ipu_utils::logger()->info("FLOPs/cycle: {}", flopsPerCycle);
+    ipu_utils::logger()->info("Vertices/cycle: {}", vertsPerCycle);
     ipu_utils::logger()->info("Extrapolated FLOPs/cycle/device: {}", flopsPerCycle * device.getTarget().getNumTiles());
+    ipu_utils::logger()->info("Extrapolated vertices/cycle/device: {}", vertsPerCycle * device.getTarget().getNumTiles());
 
     // Check the result:
     for (auto i = 0u; i < inputData.size() - 1; i += 2) {
       std::swap(inputData[i], inputData[i + 1]);
     }
     if (inputData != outputData) {
+      for (auto i = 0u; i < inputData.size(); ++i) {
+        if (inputData[i] != outputData[i]) {
+          ipu_utils::logger()->error("First mismatch at index {}", i);
+          break;
+        }
+      }
       throw std::runtime_error("Result does not match.");
     }
   }
