@@ -22,10 +22,8 @@ struct AmpOptimisations :
   void addToolOptions(boost::program_options::options_description& desc) override {
     namespace po = boost::program_options;
     desc.add_options()
-    // Value of 'size' will be stored in the variables map and used later in init():
     ("size", po::value<std::size_t>()->default_value(8192),
      "Dimension of vectors in computation.")
-    // Value of 'iterations' is stored directly to the 'iterations' member variable:
     ("vertex", po::value<std::string>(&vertexName)->default_value("Transform4x4"),
      "Name of the transform vertex to use "
      "[Transform4x4, Transform4x4_intrinsics, Transform4x4_asm, Transform4x4_amp_basic, "
