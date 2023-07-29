@@ -48,7 +48,8 @@ void MatmulBenchmark::build(poplar::Graph& g, const poplar::Target&) {
 
   poplar::OptionFlags matmulOptions{
     {"partialsType", partialsType},
-    {"availableMemoryProportion", std::to_string(availableMemoryProportion)}
+    {"availableMemoryProportion", std::to_string(availableMemoryProportion)},
+    {"fullyConnectedPass", "INFERENCE_FWD"}
   };
 
   Sequence matmul;
