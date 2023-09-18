@@ -25,6 +25,7 @@ struct Allocator {
     if (nextAvailable >= heapEnd) {
       DEBUG_PRINT("Error: Heap exceeded\n");
       assert(false);
+      return 0;
     }
     DEBUG_PRINT("Allocated %u bytes at %p\n", size, ptr);
     return (void*)ptr;

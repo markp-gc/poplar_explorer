@@ -182,7 +182,7 @@ namespace Jpeg
             W7 = 565,
         };
 
-        inline void _RowIDCT(int* blk) {
+        inline void _RowIDCT(int* const blk) {
             int x0, x1, x2, x3, x4, x5, x6, x7, x8;
             if (!((x1 = blk[4] << 11)
                 | (x2 = blk[6])
@@ -227,7 +227,7 @@ namespace Jpeg
             blk[7] = (x7 - x1) >> 8;
         }
 
-        inline void _ColIDCT(const int* blk, unsigned char *out, int stride) {
+        inline void _ColIDCT(const int* const blk, unsigned char *out, int stride) {
             int x0, x1, x2, x3, x4, x5, x6, x7, x8;
             if (!((x1 = blk[8*4] << 8)
                 | (x2 = blk[8*6])

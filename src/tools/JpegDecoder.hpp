@@ -6,6 +6,7 @@
 #include <io_utils.hpp>
 #include <tool_registry.hpp>
 
+#include <poplar/CycleCount.hpp>
 #include <poputil/TileMapping.hpp>
 #include <popops/Fill.hpp>
 #include <popops/codelets.hpp>
@@ -69,7 +70,11 @@ cpuJpegDecode(const std::string& inFile, const std::string& outFile, std::uint32
 struct JpegDecoder :
   public ipu_utils::BuilderInterface, public ToolInterface
 {
-  JpegDecoder() : input("jpeg_input_buffer"), output("jpeg_output_buffer") {}
+  JpegDecoder()
+  : input("jpeg_input_buffer"),
+    output("jpeg_output_buffer"),
+    cycleCount("cycles") {}
+
   virtual ~JpegDecoder() {}
 
   /// Tool interface:
@@ -126,11 +131,15 @@ struct JpegDecoder :
     auto uploadJpeg = input.buildWrite(graph, true);
     auto downloadResult = output.buildRead(graph, true);
 
+    poplar::program::Sequence decode {poplar::program::Execute(decodeCs)};
+    cycleCount = poplar::cycleCount(graph, decode, 0u, poplar::SyncType::INTERNAL, "count_cycles");
+
     poplar::program::Sequence prog;
     prog.add(uploadJpeg);
     popops::fill(graph, heap, prog, 0u, "zero_heap");
-    prog.add(poplar::program::Execute(decodeCs));
+    prog.add(decode);
     prog.add(downloadResult);
+    prog.add(cycleCount.buildRead(graph, false));
 
     getPrograms().add("decode", prog);
   }
@@ -139,12 +148,16 @@ struct JpegDecoder :
     // Clear the output buffer so we don't get the right result by accident:
     std::fill(outputBuffer.begin(), outputBuffer.end(), 0);
 
+    std::uint64_t cycles = ~0u;
+    cycleCount.connectReadStream(engine, &cycles);
+
     // Run IPU decoder:
     input.connectWriteStream(engine, inputBuffer);
     output.connectReadStream(engine, outputBuffer);
     getPrograms().run(engine, "decode");
 
     writeImage(outFile + "_ipu", outputBuffer, decodedWidth, decodedHeight, decodedIsColor);
+    ipu_utils::logger()->info("Decoder cycles: {}", cycles);
   }
 
   std::string inFile;
@@ -157,6 +170,7 @@ struct JpegDecoder :
   std::vector<std::uint8_t> outputBuffer;
   ipu_utils::StreamableTensor input;
   ipu_utils::StreamableTensor output;
+  ipu_utils::StreamableTensor cycleCount;
 
   std::uint32_t tileHeapSizeKiB;
 };
