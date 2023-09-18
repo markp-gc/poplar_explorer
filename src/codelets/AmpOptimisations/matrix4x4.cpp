@@ -4,6 +4,9 @@
 #include <print.h>
 #include <poplar/StackSizeDefs.hpp>
 
+#include <glm/mat4x4.hpp>
+#include <glm/gtc/type_ptr.hpp>
+
 #ifdef __IPU__
 #include <ipu_vector_math>
 #include <ipu_memory_intrinsics>
@@ -23,7 +26,7 @@ public:
   // This implementation achieves approx 0.68 FLOPs/cycle:
   // E.g. command: './multi-tool AsmVertices --size 8016 --vertex Transform4x4'.
   bool compute(unsigned workerId) {
-    auto startIndex = 4 * workerId;
+    const auto startIndex = 4 * workerId;
     for (auto v = startIndex; v < vectors.size(); v += 4 * numWorkers()) {
       float x = vectors[v + 0];
       float y = vectors[v + 1];
@@ -35,6 +38,28 @@ public:
                          matrix[4 * i + 2] * z +
                          matrix[4 * i + 3] * w;
       }
+    }
+    return true;
+  }
+};
+
+// Vertex that uses the external GLM header only C++ math library to do the
+// transformation. We do not expect this to be fast as it does not target IPU
+// intrinsics (yet).
+class Transform4x4_glm : public poplar::MultiVertex {
+public:
+  poplar::Input<poplar::Vector<float>> matrix;
+  poplar::InOut<poplar::Vector<float>> vectors;
+
+  bool compute(unsigned workerId) {
+    // Transpose because GLM storage order is column major:
+    const auto m = glm::transpose(glm::make_mat4(&matrix[0]));
+
+    const auto startIndex = 4 * workerId;
+    for (auto i = startIndex; i < vectors.size(); i += 4 * numWorkers()) {
+      auto v = glm::make_vec4(&vectors[i]);
+      v = m * v;
+      memcpy(&vectors[i], glm::value_ptr(v), sizeof(v) );
     }
     return true;
   }

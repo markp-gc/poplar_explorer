@@ -26,13 +26,15 @@ struct AmpOptimisations :
      "Dimension of vectors in computation.")
     ("vertex", po::value<std::string>(&vertexName)->default_value("Transform4x4"),
      "Name of the transform vertex to use "
-     "[Transform4x4, Transform4x4_intrinsics, Transform4x4_asm, Transform4x4_amp_basic, "
+     "[Transform4x4, Transform4x4_glm, Transform4x4_intrinsics, Transform4x4_asm, Transform4x4_amp_basic, "
      "Transform4x4_amp_8_engines, Transform4x4_amp_full_pipeline, Transform4x4_amp_tapack, "
      "Transform4x4_amp_brnzdec, Transform4x4_amp_rpt].")
     ;
   }
 
   void init(const boost::program_options::variables_map& args) override {
+    codeletPath = args["codelet-path"].as<std::string>();
+
     inputData.resize(args["size"].as<std::size_t>());
 
     if (args["model"].as<bool>() && vertexName != "Transform4x4") {
@@ -42,7 +44,7 @@ struct AmpOptimisations :
     vertexUsesAmp = vertexName.find("Transform4x4_amp_") != std::string::npos;
 
     auto sizeDivisor = 0u;
-    if (vertexName == "Transform4x4" || vertexName == "AsmTest") {
+    if (vertexName == "Transform4x4" || vertexName == "Transform4x4_glm" || vertexName == "AsmTest") {
       sizeDivisor = 4u;
     } else if (vertexName == "Transform4x4_intrinsics") {
       sizeDivisor = 8u;
@@ -66,7 +68,10 @@ struct AmpOptimisations :
 
   /// Builder interface:
   void build(poplar::Graph& graph, const poplar::Target& target) override {
-    graph.addCodelets("../src/codelets/AmpOptimisations/matrix4x4.cpp", poplar::CodeletFileType::Auto, "-O3");
+    const auto codeletFile = codeletPath + "/AmpOptimisations/matrix4x4.cpp";
+    const auto includePath = codeletPath + "/../../external/glm/";
+    ipu_utils::logger()->debug("Include path: {}", includePath);
+    graph.addCodelets(codeletFile, poplar::CodeletFileType::Auto, "-O3 -I " + includePath);
 
     // Add input vector var:
     input = graph.addVariable(poplar::FLOAT, {inputData.size()}, "vectors");
@@ -183,6 +188,7 @@ struct AmpOptimisations :
     }
   }
 
+  std::string codeletPath;
   ipu_utils::StreamableTensor input;
   ipu_utils::StreamableTensor cycleCount;
   std::vector<float> inputData;

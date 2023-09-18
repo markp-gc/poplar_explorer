@@ -17,6 +17,7 @@ Install the Poplar SDK following the instructions in the Getting Started guide f
 
 ```
 sudo apt install cmake ninja-build libspdlog-dev libboost-all-dev
+git clone --recursive https://github.com/markp-gc/poplar_explorer.git
 mkdir build
 cd build
 cmake ../ -G Ninja

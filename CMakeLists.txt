@@ -24,11 +24,19 @@ if(${POPLAR_VERSION_MAJOR} LESS 3)
   set(GCL_LIB_NAME "gcl_ct")
 endif()
 
+if(NOT EXISTS "${PROJECT_SOURCE_DIR}/external/glm/.git")
+  message(WARNING "The GLM submodule has not been initialised.")
+endif()
+
 include_directories(
   ${Boost_INCLUDE_DIRS}
-  ${CMAKE_SOURCE_DIR}/include
-  ${CMAKE_SOURCE_DIR}/src
+  ${PROJECT_SOURCE_DIR}/include
+  ${PROJECT_SOURCE_DIR}/src
 )
+
+# popc won't accept relative path from within Poplar so we define this absolute
+# path to give us a prefix to start from:
+add_compile_definitions(DEFAULT_CODELET_DIR="${PROJECT_SOURCE_DIR}/src/codelets")
 
 # Make a single library containing all tools:
 file(GLOB TOOL_HEADERS ${PROJECT_SOURCE_DIR}/src/tools/*.hpp)
@@ -37,7 +45,7 @@ add_library(tools SHARED ${TOOL_HEADERS} ${TOOL_SRC})
 target_link_libraries(tools -lpoplar -lpopops -l${GCL_LIB_NAME})
 
 # Auto detect the available tools at configuration time:
-set(GENERATED_TOOLS_FILE ${CMAKE_SOURCE_DIR}/include/cmake_discovered_tools.hpp)
+set(GENERATED_TOOLS_FILE ${PROJECT_SOURCE_DIR}/include/cmake_discovered_tools.hpp)
 file(WRITE ${GENERATED_TOOLS_FILE} "// This file is auto generated.\n#pragma once\n\n")
 file(APPEND ${GENERATED_TOOLS_FILE} "#include \<tool_registry.hpp\>\n\n")
 foreach(FILE_PATH ${TOOL_HEADERS})
@@ -55,7 +63,7 @@ message(STATUS "Discovered the following tools: ${TOOL_NAMES}")
 
 # Generate a bash completion script: if you source this script
 # bash will auto complete names of discovered tools:
-set(COMPLETION_FILE ${CMAKE_SOURCE_DIR}/completion.sh)
+set(COMPLETION_FILE ${PROJECT_SOURCE_DIR}/completion.sh)
 file(WRITE ${COMPLETION_FILE} "\#/usr/bin/env bash\n\# This file is auto generated during CMake configuration.\n")
 file(APPEND ${COMPLETION_FILE} "_poplar_multi_tool_completions()\n{\n  if \[ \"\${\#COMP_WORDS\[\@\]}\" != \"2\" \]; then\n    return\n  fi\n  TOOLS=\"")
 foreach(T ${TOOL_NAMES})
@@ -68,7 +76,7 @@ file(APPEND ${COMPLETION_FILE} "\ncomplete -o default -F _poplar_multi_tool_comp
 add_subdirectory(${PROJECT_SOURCE_DIR}/src/fft)
 
 set(PROG_SRC
-    ${CMAKE_SOURCE_DIR}/src/multi_tool.cpp
+    ${PROJECT_SOURCE_DIR}/src/multi_tool.cpp
 )
 add_executable(multi-tool ${PROG_SRC})
 target_link_libraries(multi-tool Boost::program_options fft tools -lpopnn -lpoplin -lpopops -lpoputil -lpthread -lpvti)

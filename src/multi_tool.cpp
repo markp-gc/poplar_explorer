@@ -22,9 +22,6 @@ std::pair<std::string, ToolFactoryFunction> parseToolName(int argc, char** argv)
   // We only want to get the tool name here:
   po::options_description desc("Tool Selection Options");
   desc.add_options()
-  ("list-tools", po::value<std::string>(),
-   "Print a list of available tools and exit."
-  )
   ("tool-name", po::value<std::string>(),
    "Choose the tool to be executed."
   )
@@ -100,6 +97,8 @@ void parseOptions(int argc, char** argv,
   )
   ("log-level", po::value<std::string>()->default_value("debug"),
   "Set the log level to one of the following: 'trace', 'debug', 'info', 'warn', 'err', 'critical', 'off'.")
+  ("codelet-path", po::value<std::string>()->default_value(DEFAULT_CODELET_DIR),
+  "Set the path to search for tool codelets.")
   ;
 
   po::options_description all("All Options");
@@ -231,6 +230,8 @@ int main(int argc, char** argv) {
 
   tool->setRuntimeConfig(cfg);
   tool->init(allOpts);
+
+  ipu_utils::logger()->debug("Codelet path: {}", allOpts["codelet-path"].as<std::string>());
 
   return ipu_utils::GraphManager().run(tool->getGraphBuilder());
 }
